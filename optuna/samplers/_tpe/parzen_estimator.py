@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Callable
 from typing import Dict
 from typing import NamedTuple
@@ -283,3 +285,36 @@ class _ParzenEstimator:
             return _BatchedTruncNormDistributions(mus, sigmas, low, high)
         else:
             return _BatchedDiscreteTruncNormDistributions(mus, sigmas, low, high, step)
+
+
+class _ParzenEstimatorList:
+    def __init__(self, parzen_estimators: list[_ParzenEstimator]) -> None:
+        self._parzen_estimators = parzen_estimators
+
+    def __len__(self) -> int:
+        return len(self._parzen_estimators)
+
+    def sample(self, rng: np.random.RandomState, size: int) -> dict[str, np.ndarray]:
+        # Return `samples` from each Parzen estimator.
+        # Shape of each param in `samples` is (size * len(self._parzen_estimators)).
+        samples: dict[str, np.ndarray] = {}
+        for parzen_estimator in self._parzen_estimators:
+            if len(samples) == 0:
+                samples = parzen_estimator.sample(rng=rng, size=size)
+            else:
+                new_samples = parzen_estimator.sample(rng=rng, size=size)
+                samples = {
+                    param_name: np.concatenate([samples[param_name], new_samples[param_name]])
+                    for param_name in samples
+                }
+
+        return samples
+
+    def log_pdf(self, samples_dict: dict[str, np.ndarray]) -> list[np.ndarray]:
+        # Return `log_pdf` from each Parzen estimator.
+        # Shape of the return is (len(self._parzen_estimators), n_samples).
+        results = [
+            parzen_estimator.log_pdf(samples_dict=samples_dict)
+            for parzen_estimator in self._parzen_estimators
+        ]
+        return results

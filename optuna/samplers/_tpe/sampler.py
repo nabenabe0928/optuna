@@ -23,6 +23,7 @@ from optuna.samplers._base import BaseSampler
 from optuna.samplers._lazy_random_state import LazyRandomState
 from optuna.samplers._random import RandomSampler
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
+from optuna.samplers._tpe.parzen_estimator import _ParzenEstimatorList
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimatorParameters
 from optuna.search_space import IntersectionSearchSpace
 from optuna.search_space.group_decomposed import _GroupDecomposedSearchSpace
@@ -43,6 +44,22 @@ def default_gamma(x: int) -> int:
 
 def hyperopt_default_gamma(x: int) -> int:
     return min(int(np.ceil(0.25 * np.sqrt(x))), 25)
+
+
+def ctpe_default_gamma(x: int, study: Study, trials: list[FrozenTrial]) -> int:
+    sorted_trials, _ = _split_trials(
+        study=study, trials=trials, n_below=len(trials), constraints_enabled=False
+    )
+    feasible_masks = [
+        # TODO: If no constraint exists, every trial will be considered as infeasible. Fix it.
+        # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
+        all(c <= 0 for c in t.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
+        for t in sorted_trials
+    ]
+    gamma = hyperopt_default_gamma(x)
+    # sorted_trials[gamma_modified] is the top gamma-th feasible trial.
+    gamma_modified = int(np.searchsorted(np.cumsum(feasible_masks), gamma, side="left")) + 1
+    return min(gamma_modified, len(trials))
 
 
 def default_weights(x: int) -> np.ndarray:
@@ -285,6 +302,7 @@ class TPESampler(BaseSampler):
         warn_independent_sampling: bool = True,
         constant_liar: bool = False,
         constraints_func: Optional[Callable[[FrozenTrial], Sequence[float]]] = None,
+        ctpe: bool = False,
         categorical_distance_func: Optional[
             dict[str, Callable[[CategoricalChoiceType, CategoricalChoiceType], float]]
         ] = None,
@@ -313,6 +331,7 @@ class TPESampler(BaseSampler):
         self._search_space = IntersectionSearchSpace(include_pruned=True)
         self._constant_liar = constant_liar
         self._constraints_func = constraints_func
+        self._ctpe = ctpe and constraints_func is not None
 
         if multivariate:
             warnings.warn(
@@ -457,6 +476,21 @@ class TPESampler(BaseSampler):
                     values[param_name].append(distribution.to_internal_repr(param))
         return {k: np.asarray(v) for k, v in values.items()}
 
+    def _get_parzen_estimators_and_quantiles_for_ctpe(
+        self,
+        study: Study,
+        trials: list[FrozenTrial],
+        search_space: dict[str, BaseDistribution],
+    ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
+        mpes_good, mpes_bad, quantiles = [], [], []
+        feasible_trials_list, infeasible_trials_list = _split_trials_for_constraints(trials)
+        for feas_trials, infeas_trials in zip(feasible_trials_list, infeasible_trials_list):
+            mpes_good.append(self._build_parzen_estimator(study, search_space, feas_trials))
+            mpes_bad.append(self._build_parzen_estimator(study, search_space, infeas_trials))
+            quantiles.append(len(feas_trials) / max(1, len(feas_trials) + len(infeas_trials)))
+
+        return mpes_good, mpes_bad, quantiles
+
     def _sample(
         self, study: Study, trial: FrozenTrial, search_space: Dict[str, BaseDistribution]
     ) -> Dict[str, Any]:
@@ -472,18 +506,34 @@ class TPESampler(BaseSampler):
         below_trials, above_trials = _split_trials(
             study,
             trials,
-            self._gamma(n),
-            self._constraints_func is not None,
+            self._gamma(n) if not self._ctpe else ctpe_default_gamma(n, study, trials),
+            self._constraints_func is not None and not self._ctpe,
         )
 
-        mpe_below = self._build_parzen_estimator(
-            study, search_space, below_trials, handle_below=True
-        )
-        mpe_above = self._build_parzen_estimator(study, search_space, above_trials)
+        mpes_good = [
+            self._build_parzen_estimator(study, search_space, below_trials, handle_below=True)
+        ]
+        mpes_bad = [self._build_parzen_estimator(study, search_space, above_trials)]
+        quantiles = [len(below_trials) / max(1, len(below_trials) + len(above_trials))]
+        if self._ctpe:
+            _mpes_good, _mpes_bad, _quantiles = self._get_parzen_estimators_and_quantiles_for_ctpe(
+                study,
+                trials,
+                search_space,
+            )
+            mpes_good.extend(_mpes_good)
+            mpes_bad.extend(_mpes_bad)
+            quantiles.extend(_quantiles)
 
-        samples_below = mpe_below.sample(self._rng.rng, self._n_ei_candidates)
-        acq_fn_vals = self._compute_acquisition_function(samples_below, mpe_below, mpe_above)
-        ret = TPESampler._compare(samples_below, acq_fn_vals)
+        mpe_good = _ParzenEstimatorList(mpes_good)
+        mpe_bad = _ParzenEstimatorList(mpes_bad)
+
+        # NOTE: For c-TPE, len(samples_good) == (n_constraints + 1) * self._n_ei_candidates.
+        samples_good = mpe_good.sample(self._rng.rng, self._n_ei_candidates)
+        acq_fn_vals = self._compute_acquisition_function(
+            samples_good, mpe_good, mpe_bad, quantiles
+        )
+        ret = TPESampler._compare(samples_good, acq_fn_vals)
 
         for param_name, dist in search_space.items():
             ret[param_name] = dist.to_external_repr(ret[param_name])
@@ -504,6 +554,7 @@ class TPESampler(BaseSampler):
                 param_mask_below.append(
                     all((param_name in trial.params) for param_name in search_space)
                 )
+            # TODO(nabenabe0928): I do not think this weighting works out for c-TPE.
             weights_below = _calculate_weights_below_for_multi_objective(
                 study, trials, self._constraints_func
             )[param_mask_below]
@@ -518,12 +569,27 @@ class TPESampler(BaseSampler):
     def _compute_acquisition_function(
         self,
         samples: dict[str, np.ndarray],
-        mpe_below: _ParzenEstimator,
-        mpe_above: _ParzenEstimator,
+        mpe_good: _ParzenEstimatorList,
+        mpe_bad: _ParzenEstimatorList,
+        quantiles: list[float],
     ) -> np.ndarray:
-        log_likelihoods_below = mpe_below.log_pdf(samples)
-        log_likelihoods_above = mpe_above.log_pdf(samples)
-        acq_fn_vals = log_likelihoods_below - log_likelihoods_above
+        log_likelihoods_good = mpe_good.log_pdf(samples)
+        log_likelihoods_bad = mpe_bad.log_pdf(samples)
+        if not self._ctpe and (len(log_likelihoods_good) != 1 or len(log_likelihoods_bad) != 1):
+            raise ValueError(
+                "The number of Parzen estimators for below and above in non c-TPE cases "
+                f"must be one, but got len(mpe_good)={len(mpe_good)} and "
+                f"len(mpe_bad)={len(mpe_bad)}."
+            )
+        # See: c-TPE: Tree-structured Parzen Estimator with Inequality Constraints for
+        # Expensive Hyperparameter Optimization (https://arxiv.org/abs/2211.14411)
+        # NOTE: If no constraint exists, acq_fn_vals falls back to the original TPE version.
+        _quantiles = np.asarray(quantiles)[:, np.newaxis]
+        log_first_term = np.log(_quantiles + EPS)
+        log_second_term = (
+            np.log(1.0 - _quantiles + EPS) + log_likelihoods_bad - log_likelihoods_good
+        )
+        acq_fn_vals = np.sum(-np.logaddexp(log_first_term, log_second_term), axis=0)
         return acq_fn_vals
 
     @classmethod
@@ -538,7 +604,7 @@ class TPESampler(BaseSampler):
 
         if sample_size != acq_fn_vals.size:
             raise ValueError(
-                "The sizes of `samples` and `acq_fn_vals` must be same, but got "
+                "The sizes of `samples` and `acq_fn_vals` must be same , but got "
                 f"(samples.size, acq_fn_vals.size) = ({sample_size}, {acq_fn_vals.size})."
             )
 
@@ -720,13 +786,10 @@ def _split_complete_trials_multi_objective(
         selected_indices = _solve_hssp(rank_i_lvals, rank_i_indices, subset_size, reference_point)
         indices_below[last_idx:] = selected_indices
 
-    below_trials = []
-    above_trials = []
-    for index in range(len(trials)):
-        if index in indices_below:
-            below_trials.append(trials[index])
-        else:
-            above_trials.append(trials[index])
+    # NOTE: At least, `below_trials` must be sorted for c-TPE.
+    indices_above = np.setdiff1d(np.arange(len(trials)), indices_below)
+    below_trials = [trials[i] for i in indices_below]
+    above_trials = [trials[i] for i in indices_above]
     return below_trials, above_trials
 
 
@@ -772,6 +835,32 @@ def _split_infeasible_trials(
     n_below = min(n_below, len(trials))
     sorted_trials = sorted(trials, key=_get_infeasible_trial_score)
     return sorted_trials[:n_below], sorted_trials[n_below:]
+
+
+def _split_trials_for_constraints(
+    trials: list[FrozenTrial],
+) -> tuple[list[list[FrozenTrial]], list[list[FrozenTrial]]]:
+    trial_indices = np.array(
+        [i for i, t in enumerate(trials) if t.system_attrs.get(_CONSTRAINTS_KEY) is not None]
+    )
+    constraint_values = np.array([trials[i].system_attrs[_CONSTRAINTS_KEY] for i in trial_indices])
+    if constraint_values.size == 0:
+        warnings.warn(
+            "No trials with constraint values were found, "
+            "so all the trials will be treated as infeasible."
+        )
+        return [[]], [trials]
+
+    indices = np.arange(len(trials))
+    min_constraint_indices = np.argmin(constraint_values, axis=0)
+    feasible_trials_list, infeasible_trials_list = [], []
+    for idx, cstr_vals in zip(min_constraint_indices, constraint_values):
+        feasible_indices = trial_indices[np.union1d(cstr_vals <= 0, idx).astype(np.int32)]
+        infeasible_indices = np.setdiff1d(indices, feasible_indices)
+        feasible_trials_list.append([trials[idx] for idx in feasible_indices])
+        infeasible_trials_list.append([trials[idx] for idx in infeasible_indices])
+
+    return feasible_trials_list, infeasible_trials_list
 
 
 def _calculate_weights_below_for_multi_objective(
