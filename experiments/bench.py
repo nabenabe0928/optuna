@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from argparse import ArgumentParser
 
-from chpobench import BaseBench, HPOBench, HPOLib, JAHSBench201
+from chpobench import HPOBench, HPOLib, JAHSBench201
 
 from experiments.runner import run_study
 
@@ -13,7 +13,7 @@ import optuna
 _CONSTRAINT_KEY = "constraints"
 
 
-def objective(trial: optuna.Trial, bench: BaseBench) -> float:
+def objective(trial: optuna.Trial, bench) -> float:
     eval_config = {}
     for name, dist in bench.config_space.items():
         if hasattr(dist, "choices"):
@@ -44,18 +44,19 @@ def constraints(trial: optuna.trial.FrozenTrial) -> tuple[float]:
 
 def get_study_name(args, dataset_name: str, quantiles: dict[str, float]) -> str:
     prefix = "ctpe" if args.ctpe else "original"
-    study_name = f"{prefix}-{args.gamma_type}-{args.bench}-{dataset_name}"
+    study_name = f"{prefix}-{args.gamma_type}-{args.bench}-{dataset_name}-"
     study_name += "-".join([f"{name}={q}" for name, q in quantiles.items()])
     study_name += f"-{args.seed:0>2}"
+    return study_name
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--seed", type=int, choices=list(range(10)))
+    parser.add_argument("--seed", type=int, choices=list(range(20)))
     parser.add_argument("--bench", type=str, choices=["jahs", "hpobench", "hpolib"])
-    parser.add_argument("--dataset_id", type=int)
     parser.add_argument("--ctpe", type=str, choices=["True", "False"])
-    parser.add_argument("--gamma_type", type=str, choices=["sqrt", "linear"])
+    parser.add_argument("--dataset_id", default=0, type=int)
+    parser.add_argument("--gamma_type", type=str, default="linear", choices=["sqrt", "linear"])
     args = parser.parse_args()
     args.ctpe = eval(args.ctpe)
 
@@ -86,7 +87,7 @@ if __name__ == "__main__":
                 seed=args.seed,
                 ctpe=args.ctpe,
                 gamma_type=args.gamma_type,
-                study_name=get_study_name(args, dataset_name),
+                study_name=get_study_name(args, dataset_name, quantiles),
                 storage="sqlite:///ctpe-experiments.db",
                 directions=["minimize"],
             )
