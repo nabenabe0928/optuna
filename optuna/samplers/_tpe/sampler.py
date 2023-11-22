@@ -39,19 +39,20 @@ _logger = get_logger(__name__)
 
 
 def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
-    n_constraints = 0
-    max_at = 0
+    n_constraints = max(
+        len(t.system_attrs[_CONSTRAINTS_KEY])
+        for t in trials if _CONSTRAINTS_KEY in t.system_attrs
+    )
     for t in trials:
-        n_constraints_new = len(t.system_attrs.get(_CONSTRAINTS_KEY, []))
-        if n_constraints != 0 and n_constraints_new != 0 and n_constraints != n_constraints_new:
+        if _CONSTRAINTS_KEY not in t.system_attrs:
+            continue
+
+        n_constraints_of_trial = len(t.system_attrs[_CONSTRAINTS_KEY])
+        if n_constraints_of_trial < n_constraints:
             raise ValueError(
                 "The number of constraints must be consistent during an optimization, but got "
-                f"{n_constraints} at Trial#{max_at} and "
-                f"{n_constraints_new} constraints at Trial#{t.number}."
+                f"n_constraints={n_constraints_of_trial} at Trial#{t.number}."
             )
-        if n_constraints < n_constraints_new:
-            max_at = t.number
-            n_constraints = n_constraints_new
 
     return n_constraints
 
@@ -64,11 +65,12 @@ def hyperopt_default_gamma(x: int) -> int:
     return min(int(np.ceil(0.25 * np.sqrt(x))), 25)
 
 
-def ctpe_default_gamma(x: int, study: Study, trials: list[FrozenTrial]) -> int:
+def ctpe_default_gamma(
+    x: int, study: Study, trials: list[FrozenTrial], gamma: Callable[[int], int]
+) -> int:
     n_constraints = _infer_n_constraints(trials)
     if n_constraints == 0:
-        # TODO(nabenabe0928): Make here more flexible.
-        return default_gamma(x)
+        return gamma(x)
 
     sorted_trials, _ = _split_trials(
         study=study, trials=trials, n_below=len(trials), constraints_enabled=False
@@ -78,10 +80,10 @@ def ctpe_default_gamma(x: int, study: Study, trials: list[FrozenTrial]) -> int:
         all(c <= 0 for c in t.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
         for t in sorted_trials
     ]
-    gamma = hyperopt_default_gamma(x)  # TODO(nabenabe0928): Make here more flexible.
+    n_below = gamma(x)
     # sorted_trials[gamma_modified] is the top gamma-th feasible trial.
-    gamma_modified = int(np.searchsorted(np.cumsum(feasible_masks), gamma, side="left")) + 1
-    return min(gamma_modified, len(trials))
+    n_below_modified = int(np.searchsorted(np.cumsum(feasible_masks), n_below, side="left")) + 1
+    return min(n_below_modified, len(trials))
 
 
 def default_weights(x: int) -> np.ndarray:
@@ -528,7 +530,7 @@ class TPESampler(BaseSampler):
         below_trials, above_trials = _split_trials(
             study,
             trials,
-            self._gamma(n) if not self._ctpe else ctpe_default_gamma(n, study, trials),
+            ctpe_default_gamma(n, study, trials, self._gamma) if self._ctpe else self._gamma(n),
             self._constraints_func is not None and not self._ctpe,
         )
 
@@ -866,21 +868,20 @@ def _split_trials_for_constraints(
 ) -> tuple[list[list[FrozenTrial]], list[list[FrozenTrial]]]:
     n_constraints = _infer_n_constraints(trials)
     if n_constraints == 0:
-        warnings.warn(
-            "No trials with constraint values were found, "
-            "so all the trials will be treated as infeasible."
-        )
+        warnings.warn("No trials with constraint values were found.")
         return [], []
 
     indices = np.arange(len(trials))
     cstr_indices = np.array(
         [i for i, t in enumerate(trials) if _CONSTRAINTS_KEY in t.system_attrs]
     )
-    cstr_vals = np.array([trials[i].system_attrs[_CONSTRAINTS_KEY] for i in cstr_indices])
-    min_cstr_indices = np.argmin(cstr_vals, axis=0)
+    # cstr_vals.shape = (n_constraints, len(cstr_indices))
+    cstr_vals = np.array([trials[i].system_attrs[_CONSTRAINTS_KEY] for i in cstr_indices]).T
+    min_cstr_indices = np.argmin(cstr_vals, axis=1)
     feasible_trials_list, infeasible_trials_list = [], []
     for idx, cstr_val in zip(min_cstr_indices, cstr_vals):
-        feasible_indices = cstr_indices[np.union1d(cstr_val <= 0, idx).astype(np.int32)]
+        # Include the index with the minimum constraint value if no trial is feasible.
+        feasible_indices = np.union1d(cstr_indices[cstr_val <= 0], idx).astype(np.int32)
         infeasible_indices = np.setdiff1d(indices, feasible_indices)
         feasible_trials_list.append([trials[idx] for idx in feasible_indices])
         infeasible_trials_list.append([trials[idx] for idx in infeasible_indices])
