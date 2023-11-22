@@ -38,6 +38,24 @@ EPS = 1e-12
 _logger = get_logger(__name__)
 
 
+def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
+    n_constraints = 0
+    max_at = 0
+    for t in trials:
+        n_constraints_new = len(t.system_attrs.get(_CONSTRAINTS_KEY, []))
+        if n_constraints != 0 and n_constraints_new != 0 and n_constraints != n_constraints_new:
+            raise ValueError(
+                "The number of constraints must be consistent during an optimization, but got "
+                f"{n_constraints} at Trial#{max_at} and "
+                f"{n_constraints_new} constraints at Trial#{t.number}."
+            )
+        if n_constraints < n_constraints_new:
+            max_at = t.number
+            n_constraints = n_constraints_new
+
+    return n_constraints
+
+
 def default_gamma(x: int) -> int:
     return min(int(np.ceil(0.1 * x)), 25)
 
@@ -47,16 +65,20 @@ def hyperopt_default_gamma(x: int) -> int:
 
 
 def ctpe_default_gamma(x: int, study: Study, trials: list[FrozenTrial]) -> int:
+    n_constraints = _infer_n_constraints(trials)
+    if n_constraints == 0:
+        # TODO(nabenabe0928): Make here more flexible.
+        return default_gamma(x)
+
     sorted_trials, _ = _split_trials(
         study=study, trials=trials, n_below=len(trials), constraints_enabled=False
     )
     feasible_masks = [
-        # TODO: If no constraint exists, every trial will be considered as infeasible. Fix it.
         # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
         all(c <= 0 for c in t.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
         for t in sorted_trials
     ]
-    gamma = hyperopt_default_gamma(x)
+    gamma = hyperopt_default_gamma(x)  # TODO(nabenabe0928): Make here more flexible.
     # sorted_trials[gamma_modified] is the top gamma-th feasible trial.
     gamma_modified = int(np.searchsorted(np.cumsum(feasible_masks), gamma, side="left")) + 1
     return min(gamma_modified, len(trials))
@@ -556,7 +578,9 @@ class TPESampler(BaseSampler):
                 )
             # TODO(nabenabe0928): I do not think this weighting works out for c-TPE.
             weights_below = _calculate_weights_below_for_multi_objective(
-                study, trials, self._constraints_func
+                study,
+                trials,
+                constraints_func=self._constraints_func if not self._ctpe else None,
             )[param_mask_below]
             mpe = _ParzenEstimator(
                 observations, search_space, self._parzen_estimator_parameters, weights_below
@@ -604,7 +628,7 @@ class TPESampler(BaseSampler):
 
         if sample_size != acq_fn_vals.size:
             raise ValueError(
-                "The sizes of `samples` and `acq_fn_vals` must be same , but got "
+                "The sizes of `samples` and `acq_fn_vals` must be same, but got "
                 f"(samples.size, acq_fn_vals.size) = ({sample_size}, {acq_fn_vals.size})."
             )
 
@@ -840,22 +864,23 @@ def _split_infeasible_trials(
 def _split_trials_for_constraints(
     trials: list[FrozenTrial],
 ) -> tuple[list[list[FrozenTrial]], list[list[FrozenTrial]]]:
-    trial_indices = np.array(
-        [i for i, t in enumerate(trials) if t.system_attrs.get(_CONSTRAINTS_KEY) is not None]
-    )
-    constraint_values = np.array([trials[i].system_attrs[_CONSTRAINTS_KEY] for i in trial_indices])
-    if constraint_values.size == 0:
+    n_constraints = _infer_n_constraints(trials)
+    if n_constraints == 0:
         warnings.warn(
             "No trials with constraint values were found, "
             "so all the trials will be treated as infeasible."
         )
-        return [[]], [trials]
+        return [], []
 
     indices = np.arange(len(trials))
-    min_constraint_indices = np.argmin(constraint_values, axis=0)
+    cstr_indices = np.array(
+        [i for i, t in enumerate(trials) if _CONSTRAINTS_KEY in t.system_attrs]
+    )
+    cstr_vals = np.array([trials[i].system_attrs[_CONSTRAINTS_KEY] for i in cstr_indices])
+    min_cstr_indices = np.argmin(cstr_vals, axis=0)
     feasible_trials_list, infeasible_trials_list = [], []
-    for idx, cstr_vals in zip(min_constraint_indices, constraint_values):
-        feasible_indices = trial_indices[np.union1d(cstr_vals <= 0, idx).astype(np.int32)]
+    for idx, cstr_val in zip(min_cstr_indices, cstr_vals):
+        feasible_indices = cstr_indices[np.union1d(cstr_val <= 0, idx).astype(np.int32)]
         infeasible_indices = np.setdiff1d(indices, feasible_indices)
         feasible_trials_list.append([trials[idx] for idx in feasible_indices])
         infeasible_trials_list.append([trials[idx] for idx in infeasible_indices])
