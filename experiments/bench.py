@@ -60,6 +60,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.ctpe = eval(args.ctpe)
 
+    storage = "sqlite:///ctpe-experiments.db"
     bench_cls = {"hpobench": HPOBench, "hpolib": HPOLib, "jahs": JAHSBench201}[args.bench]
     avail_constraint_names = bench_cls.avail_constraint_names
     dataset_name = bench_cls.dataset_names[args.dataset_id]
@@ -75,19 +76,29 @@ if __name__ == "__main__":
             if len(quantiles) == 0:
                 continue
 
-            bench = bench_cls(
-                data_path=data_path,
-                dataset_name=dataset_name,
-                seed=args.seed,
-                quantiles=quantiles,
-            )
+            study_name = get_study_name(args, dataset_name, quantiles)
+            if study_name in optuna.get_all_study_names(storage):
+                print(f"Found {study_name}, so skip it.")
+                continue
+
+            try:
+                bench = bench_cls(
+                    data_path=data_path,
+                    dataset_name=dataset_name,
+                    seed=args.seed,
+                    quantiles=quantiles,
+                )
+            except ValueError:
+                print("No feasible solution exists, so skip it.")
+                continue
+
             run_study(
                 objective=lambda trial: objective(trial, bench),
                 constraints_func=constraints,
                 seed=args.seed,
                 ctpe=args.ctpe,
                 gamma_type=args.gamma_type,
-                study_name=get_study_name(args, dataset_name, quantiles),
-                storage="sqlite:///ctpe-experiments.db",
+                study_name=study_name,
+                storage=storage,
                 directions=["minimize"],
             )
