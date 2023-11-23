@@ -5,6 +5,7 @@ from typing import Any
 from typing import Callable
 from typing import cast
 from typing import Dict
+from typing import Literal
 from typing import Optional
 from typing import Sequence
 import warnings
@@ -73,7 +74,11 @@ def ctpe_default_gamma(
         return gamma(x)
 
     sorted_trials, _ = _split_trials(
-        study=study, trials=trials, n_below=len(trials), constraints_enabled=False
+        study=study,
+        trials=trials,
+        n_below=len(trials),
+        constraints_enabled=False,
+        order_by="value",
     )
     feasible_masks = [
         # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
@@ -716,6 +721,7 @@ def _split_trials(
     trials: list[FrozenTrial],
     n_below: int,
     constraints_enabled: bool,
+    order_by: Literal["value", "number"] = "number",
 ) -> tuple[list[FrozenTrial], list[FrozenTrial]]:
     complete_trials = []
     pruned_trials = []
@@ -743,8 +749,12 @@ def _split_trials(
 
     below_trials = below_complete + below_pruned + below_infeasible
     above_trials = above_complete + above_pruned + above_infeasible + running_trials
-    below_trials.sort(key=lambda trial: trial.number)
-    above_trials.sort(key=lambda trial: trial.number)
+    
+    if order_by == "number":
+        # This is necessary to weight lower on older trials.
+        # Otherwise, trials will be sorted by value. (at least for each state!)
+        below_trials.sort(key=lambda trial: trial.number)
+        above_trials.sort(key=lambda trial: trial.number)
 
     return below_trials, above_trials
 
