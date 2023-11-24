@@ -15,7 +15,7 @@ def run_study(
     study_name: str,
     storage: str,
     directions: list[Literal["minimize", "maximize"]],
-    n_trials: int = 100,
+    n_trials: int = 200,
 ) -> optuna.Study:
     sampler = optuna.samplers.TPESampler(
         multivariate=True,
