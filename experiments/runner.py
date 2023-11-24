@@ -16,7 +16,7 @@ def run_study(
     storage: str,
     directions: list[Literal["minimize", "maximize"]],
     n_trials: int = 100,
-) -> None:
+) -> optuna.Study:
     sampler = optuna.samplers.TPESampler(
         multivariate=True,
         constraints_func=constraints_func,
@@ -30,3 +30,4 @@ def run_study(
     kwargs = dict(directions=directions) if len(directions) > 1 else dict(direction=directions[0])
     study = optuna.create_study(sampler=sampler, storage=storage, study_name=study_name, **kwargs)
     study.optimize(objective, n_trials=n_trials)
+    return study

@@ -1,6 +1,6 @@
-for q1 in 0.01, 0.1, 0.5, 0.9, 1.0
+for q1 in 0.01 0.1 0.5 0.9 1.0
 do
-    for q2 in 0.01, 0.1, 0.5, 0.9, 1.0
+    for q2 in 0.01 0.1 0.5 0.9 1.0
     do
         for bench in hpolib jahs hpobench
         do
