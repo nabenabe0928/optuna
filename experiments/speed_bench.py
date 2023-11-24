@@ -20,7 +20,7 @@ def main():
     )
     results = {"ctpe-linear": [], "ctpe-sqrt": [], "original-linear": []}
     N_SEEDS = 20
-    N_TRIALS = 2000
+    N_TRIALS = 1000
 
     for setup_name in results:
         ctpe = "ctpe" in setup_name

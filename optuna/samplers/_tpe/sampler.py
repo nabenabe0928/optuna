@@ -510,9 +510,12 @@ class TPESampler(BaseSampler):
         study: Study,
         trials: list[FrozenTrial],
         search_space: dict[str, BaseDistribution],
+        n_below_min: int,
     ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
         mpes_good, mpes_bad, quantiles = [], [], []
-        feasible_trials_list, infeasible_trials_list = _split_trials_for_constraints(trials)
+        feasible_trials_list, infeasible_trials_list = _split_trials_for_constraints(
+            trials, n_below_min,
+        )
         for feas_trials, infeas_trials in zip(feasible_trials_list, infeasible_trials_list):
             mpes_good.append(self._build_parzen_estimator(study, search_space, feas_trials))
             mpes_bad.append(self._build_parzen_estimator(study, search_space, infeas_trials))
@@ -549,6 +552,7 @@ class TPESampler(BaseSampler):
                 study,
                 trials,
                 search_space,
+                n_below_min=self._gamma(n),
             )
             mpes_good.extend(_mpes_good)
             mpes_bad.extend(_mpes_bad)
@@ -875,6 +879,7 @@ def _split_infeasible_trials(
 
 def _split_trials_for_constraints(
     trials: list[FrozenTrial],
+    n_below_min: int,
 ) -> tuple[list[list[FrozenTrial]], list[list[FrozenTrial]]]:
     n_constraints = _infer_n_constraints(trials)
     if n_constraints == 0:
@@ -887,11 +892,12 @@ def _split_trials_for_constraints(
     )
     # cstr_vals.shape = (n_constraints, len(cstr_indices))
     cstr_vals = np.array([trials[i].system_attrs[_CONSTRAINTS_KEY] for i in cstr_indices]).T
-    min_cstr_indices = np.argmin(cstr_vals, axis=1)
+    # Find the n_below_min-th minimum value in each constraint.
+    thresholds = np.partition(cstr_vals, kth=n_below_min - 1, axis=-1)[:, n_below_min - 1]
     feasible_trials_list, infeasible_trials_list = [], []
-    for idx, cstr_val in zip(min_cstr_indices, cstr_vals):
-        # Include the index with the minimum constraint value if no trial is feasible.
-        feasible_indices = np.union1d(cstr_indices[cstr_val <= 0], idx).astype(np.int32)
+    for threshold, cstr_val in zip(thresholds, cstr_vals):
+        # Include at least the indices up to the n_below_min-th min constraint value.
+        feasible_indices = cstr_indices[cstr_val <= threshold]
         infeasible_indices = np.setdiff1d(indices, feasible_indices)
         feasible_trials_list.append([trials[idx] for idx in feasible_indices])
         infeasible_trials_list.append([trials[idx] for idx in infeasible_indices])
