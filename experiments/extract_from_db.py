@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import pickle
+from argparse import ArgumentParser
 
 import numpy as np
 
 import optuna
 
 
-STORAGE = "sqlite:///ctpe-experiments.db"
+parser = ArgumentParser()
+parser.add_argument("--bench", choices=["hpobench", "hpolib", "jahs"])
+args = parser.parse_args()
+
+STORAGE = f"sqlite:///ctpe-experiments-{args.bench}.db"
 
 
 def extract_trials_from_study(study_name: str) -> dict[str, np.ndarray]:
@@ -28,5 +33,5 @@ if __name__ == "__main__":
 
         results[study_name] = extract_trials_from_study(study_name)
 
-    with open("ctpe-experiments.pkl", mode="wb") as f:
+    with open(f"ctpe-experiments-{args.bench}.pkl", mode="wb") as f:
         pickle.dump(results, f)
