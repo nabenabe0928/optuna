@@ -897,7 +897,7 @@ def _split_trials_for_constraints(
     feasible_trials_list, infeasible_trials_list = [], []
     for threshold, cstr_val in zip(thresholds, cstr_vals):
         # Include at least the indices up to the n_below_min-th min constraint value.
-        feasible_indices = cstr_indices[cstr_val <= threshold]
+        feasible_indices = cstr_indices[cstr_val <= max(0, threshold)]
         infeasible_indices = np.setdiff1d(indices, feasible_indices)
         feasible_trials_list.append([trials[idx] for idx in feasible_indices])
         infeasible_trials_list.append([trials[idx] for idx in infeasible_indices])
