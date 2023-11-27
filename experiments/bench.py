@@ -104,6 +104,11 @@ def main() -> None:
     if len(quantiles) == 0:
         return
 
+    results = {}
+    if not os.path.exists(pkl_file):
+        with open(pkl_file, mode="wb") as f:
+            pickle.dump(results, f)
+
     for seed in range(20):
         bench.reseed(seed)
         study_name = get_study_name(args, dataset_name, quantiles, seed)
@@ -121,8 +126,8 @@ def main() -> None:
             directions=["minimize"],
         )
         results = pickle.load(open(pkl_file, mode="rb"))
-        results.update(extract_from_study(study))
-        with open(open(pkl_file, mode="wb")) as f:
+        results[study_name] = extract_from_study(study)
+        with open(pkl_file, mode="wb") as f:
             pickle.dump(results, f)
 
 
