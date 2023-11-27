@@ -13,8 +13,8 @@ def run_study(
     gamma_type: str,
     ctpe: bool,
     study_name: str,
-    storage: str,
     directions: list[Literal["minimize", "maximize"]],
+    storage: str | None = None,
     n_trials: int = 200,
 ) -> optuna.Study:
     sampler = optuna.samplers.TPESampler(

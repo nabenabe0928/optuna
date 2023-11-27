@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+import pickle
 from argparse import ArgumentParser
 
 from chpobench import HPOBench, HPOLib, JAHSBench201
 
 from experiments.runner import run_study
+
+import numpy as np
 
 import optuna
 
@@ -73,11 +76,18 @@ def get_args():
     return args
 
 
+def extract_from_study(study: optuna.Study) -> dict[str, np.ndarray]:
+    return {
+        "loss": np.asarray([t.value for t in study.trials]),
+        "feasible": np.asarray([all(c <= 0 for c in t.user_attrs["constraints"]) for t in study.trials]),
+    }
+
+
 def main() -> None:
     args = get_args()
-    storage = "sqlite:///ctpe-experiments.db"
     bench_cls = {"hpobench": HPOBench, "hpolib": HPOLib, "jahs": JAHSBench201}[args.bench]
     dataset_name = bench_cls.dataset_names[args.dataset_id]
+    pkl_file = f"ctpe-experiments-{args.bench}.pkl"
 
     quantiles = get_quantile(args, bench_cls.avail_constraint_names)
     try:
@@ -97,20 +107,23 @@ def main() -> None:
     for seed in range(20):
         bench.reseed(seed)
         study_name = get_study_name(args, dataset_name, quantiles, seed)
-        if study_name in optuna.get_all_study_names(storage):
+        if study_name in pickle.load(open(pkl_file, mode="rb")):
             print(f"Found {study_name}, so skip it.")
             continue
 
-        run_study(
+        study = run_study(
             objective=lambda trial: objective(trial, bench),
             constraints_func=constraints,
             seed=seed,
             ctpe=args.ctpe,
             gamma_type=args.gamma_type,
             study_name=study_name,
-            storage=storage,
             directions=["minimize"],
         )
+        results = pickle.load(open(pkl_file, mode="rb"))
+        results.update(extract_from_study(study))
+        with open(open(pkl_file, mode="wb")) as f:
+            pickle.dump(results, f)
 
 
 if __name__ == "__main__":
