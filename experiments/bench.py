@@ -71,8 +71,10 @@ def get_args():
     parser.add_argument("--q2", type=float, choices=[0.01, 0.1, 0.5, 0.9, 1.0])
     parser.add_argument("--dataset_id", default=0, type=int)
     parser.add_argument("--gamma_type", type=str, default="linear", choices=["sqrt", "linear"])
+    parser.add_argument("--multivariate", type=str, default="True", choices=["True", "False"])
     args = parser.parse_args()
     args.ctpe = eval(args.ctpe)
+    args.multivariate = eval(args.multivariate)
     return args
 
 
@@ -123,6 +125,7 @@ def main() -> None:
             ctpe=args.ctpe,
             gamma_type=args.gamma_type,
             study_name=study_name,
+            multivariate=args.multivariate,
             directions=["minimize"],
         )
         results = pickle.load(open(pkl_file, mode="rb"))

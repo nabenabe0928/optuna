@@ -14,11 +14,12 @@ def run_study(
     ctpe: bool,
     study_name: str,
     directions: list[Literal["minimize", "maximize"]],
+    multivariate: bool = True,
     storage: str | None = None,
     n_trials: int = 200,
 ) -> optuna.Study:
     sampler = optuna.samplers.TPESampler(
-        multivariate=True,
+        multivariate=multivariate,
         constraints_func=constraints_func,
         ctpe=ctpe,
         seed=seed,
