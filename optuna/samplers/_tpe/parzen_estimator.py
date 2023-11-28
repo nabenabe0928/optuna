@@ -294,15 +294,19 @@ class _ParzenEstimatorList:
     def __len__(self) -> int:
         return len(self._parzen_estimators)
 
-    def sample(self, rng: np.random.RandomState, size: int) -> dict[str, np.ndarray]:
+    def sample(
+        self, rng: np.random.RandomState, size: int, sample_ratio: list[float]
+    ) -> dict[str, np.ndarray]:
         # Return `samples` from each Parzen estimator.
         # Shape of each param in `samples` is (size * len(self._parzen_estimators)).
         samples: dict[str, np.ndarray] = {}
-        for parzen_estimator in self._parzen_estimators:
+        denom = sum(sample_ratio)
+        sample_sizes = [int(np.ceil(r / denom)) for r in sample_ratio]
+        for parzen_estimator, sample_size in zip(self._parzen_estimators, sample_sizes):
             if len(samples) == 0:
-                samples = parzen_estimator.sample(rng=rng, size=size)
+                samples = parzen_estimator.sample(rng=rng, size=sample_size)
             else:
-                new_samples = parzen_estimator.sample(rng=rng, size=size)
+                new_samples = parzen_estimator.sample(rng=rng, size=sample_size)
                 samples = {
                     param_name: np.concatenate([samples[param_name], new_samples[param_name]])
                     for param_name in samples

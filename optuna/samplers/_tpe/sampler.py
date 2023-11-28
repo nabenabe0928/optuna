@@ -41,8 +41,7 @@ _logger = get_logger(__name__)
 
 def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
     n_constraints = max(
-        len(t.system_attrs[_CONSTRAINTS_KEY])
-        for t in trials if _CONSTRAINTS_KEY in t.system_attrs
+        len(t.system_attrs[_CONSTRAINTS_KEY]) for t in trials if _CONSTRAINTS_KEY in t.system_attrs
     )
     for t in trials:
         if _CONSTRAINTS_KEY not in t.system_attrs:
@@ -514,7 +513,8 @@ class TPESampler(BaseSampler):
     ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
         mpes_good, mpes_bad, quantiles = [], [], []
         feasible_trials_list, infeasible_trials_list = _split_trials_for_constraints(
-            trials, n_below_min,
+            trials,
+            n_below_min,
         )
         for feas_trials, infeas_trials in zip(feasible_trials_list, infeasible_trials_list):
             mpes_good.append(self._build_parzen_estimator(study, search_space, feas_trials))
@@ -562,7 +562,8 @@ class TPESampler(BaseSampler):
         mpe_bad = _ParzenEstimatorList(mpes_bad)
 
         # NOTE: For c-TPE, len(samples_good) == (n_constraints + 1) * self._n_ei_candidates.
-        samples_good = mpe_good.sample(self._rng.rng, self._n_ei_candidates)
+        sample_ratio = [1.0 - q for q in quantiles]  # NOTE: Experimental
+        samples_good = mpe_good.sample(self._rng.rng, self._n_ei_candidates, sample_ratio)
         acq_fn_vals = self._compute_acquisition_function(
             samples_good, mpe_good, mpe_bad, quantiles
         )
@@ -753,7 +754,7 @@ def _split_trials(
 
     below_trials = below_complete + below_pruned + below_infeasible
     above_trials = above_complete + above_pruned + above_infeasible + running_trials
-    
+
     if order_by == "number":
         # This is necessary to weight lower on older trials.
         # Otherwise, trials will be sorted by value. (at least for each state!)
