@@ -57,6 +57,13 @@ def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
     return n_constraints
 
 
+def _is_trial_feasible(trial: FrozenTrial, n_constraints: int) -> bool:
+    if n_constraints == 0:
+        return True
+
+    # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
+    return all(c <= 0 for c in trial.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
+
 def default_gamma(x: int) -> int:
     return min(int(np.ceil(0.1 * x)), 25)
 
@@ -66,9 +73,12 @@ def hyperopt_default_gamma(x: int) -> int:
 
 
 def ctpe_default_gamma(
-    x: int, study: Study, trials: list[FrozenTrial], gamma: Callable[[int], int]
+    x: int,
+    study: Study,
+    trials: list[FrozenTrial],
+    gamma: Callable[[int], int],
+    n_constraints: int,
 ) -> int:
-    n_constraints = _infer_n_constraints(trials)
     if n_constraints == 0:
         return gamma(x)
 
@@ -79,11 +89,7 @@ def ctpe_default_gamma(
         constraints_enabled=False,
         order_by="value",
     )
-    feasible_masks = [
-        # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
-        all(c <= 0 for c in t.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
-        for t in sorted_trials
-    ]
+    feasible_masks = [_is_trial_feasible(t, n_constraints) for t in sorted_trials]
     n_below = gamma(x)
     # sorted_trials[gamma_modified] is the top gamma-th feasible trial.
     n_below_modified = int(np.searchsorted(np.cumsum(feasible_masks), n_below, side="left")) + 1
@@ -510,11 +516,13 @@ class TPESampler(BaseSampler):
         trials: list[FrozenTrial],
         search_space: dict[str, BaseDistribution],
         n_below_min: int,
+        n_constraints: int,
     ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
         mpes_good, mpes_bad, quantiles = [], [], []
         feasible_trials_list, infeasible_trials_list = _split_trials_for_constraints(
             trials,
             n_below_min,
+            n_constraints,
         )
         for feas_trials, infeas_trials in zip(feasible_trials_list, infeasible_trials_list):
             mpes_good.append(self._build_parzen_estimator(study, search_space, feas_trials))
@@ -532,13 +540,17 @@ class TPESampler(BaseSampler):
             states = [TrialState.COMPLETE, TrialState.PRUNED]
         use_cache = not self._constant_liar
         trials = study._get_trials(deepcopy=False, states=states, use_cache=use_cache)
+        n_constraints = _infer_n_constraints(trials) if self._constraints_func is not None else 0
 
         # We divide data into below and above.
         n = sum(trial.state != TrialState.RUNNING for trial in trials)  # Ignore running trials.
         below_trials, above_trials = _split_trials(
             study,
             trials,
-            ctpe_default_gamma(n, study, trials, self._gamma) if self._ctpe else self._gamma(n),
+            (
+                ctpe_default_gamma(n, study, trials, self._gamma, n_constraints)
+                if self._ctpe else self._gamma(n)
+            ),
             self._constraints_func is not None and not self._ctpe,
         )
 
@@ -553,6 +565,7 @@ class TPESampler(BaseSampler):
                 trials,
                 search_space,
                 n_below_min=self._gamma(n),
+                n_constraints=n_constraints,
             )
             mpes_good.extend(_mpes_good)
             mpes_bad.extend(_mpes_bad)
@@ -881,8 +894,8 @@ def _split_infeasible_trials(
 def _split_trials_for_constraints(
     trials: list[FrozenTrial],
     n_below_min: int,
+    n_constraints: int,
 ) -> tuple[list[list[FrozenTrial]], list[list[FrozenTrial]]]:
-    n_constraints = _infer_n_constraints(trials)
     if n_constraints == 0:
         warnings.warn("No trials with constraint values were found.")
         return [], []
