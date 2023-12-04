@@ -64,6 +64,7 @@ def _is_trial_feasible(trial: FrozenTrial, n_constraints: int) -> bool:
     # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
     return all(c <= 0 for c in trial.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
 
+
 def default_gamma(x: int) -> int:
     return min(int(np.ceil(0.1 * x)), 25)
 
@@ -72,7 +73,7 @@ def hyperopt_default_gamma(x: int) -> int:
     return min(int(np.ceil(0.25 * np.sqrt(x))), 25)
 
 
-def ctpe_default_gamma(
+def ctpe_gamma(
     x: int,
     study: Study,
     trials: list[FrozenTrial],
@@ -91,7 +92,7 @@ def ctpe_default_gamma(
     )
     feasible_masks = [_is_trial_feasible(t, n_constraints) for t in sorted_trials]
     n_below = gamma(x)
-    # sorted_trials[gamma_modified] is the top gamma-th feasible trial.
+    # sorted_trials[n_below_modified] is the top gamma-th feasible trial.
     n_below_modified = int(np.searchsorted(np.cumsum(feasible_masks), n_below, side="left")) + 1
     return min(n_below_modified, len(trials))
 
@@ -531,6 +532,36 @@ class TPESampler(BaseSampler):
 
         return mpes_good, mpes_bad, quantiles
 
+    def _sample_candidates(
+        self,
+        study: Study,
+        below_trials: list[FrozenTrial],
+        search_space: dict[str, BaseDistribution],
+        n_below_min: int,
+        mpe_good: _ParzenEstimatorList,
+        quantiles: list[float],
+    ) -> dict[str, np.ndarray]:
+        n_constraints = len(mpe_good) - 1
+        if n_constraints == 0 or not self._ctpe:
+            return mpe_good.sample(self._rng.rng, self._n_ei_candidates, sample_ratio=[1.0])
+
+        below_feasible_trials = [t for t in below_trials if _is_trial_feasible(t, n_constraints)]
+        if len(below_feasible_trials) < n_below_min:
+            # The contribution of the acquisition function for objective becomes zero,
+            # so we drop samples from the Parzen estimator for objective.
+            sample_ratio = [0.0] + [1.0 - q for q in quantiles[1:]]
+            return mpe_good.sample(self._rng.rng, self._n_ei_candidates, sample_ratio)
+        elif len(below_feasible_trials) == n_below_min:
+            mpe_below_feasible = self._build_parzen_estimator(
+                study,
+                search_space,
+                below_feasible_trials,
+                handle_below=True,
+            )
+            return mpe_below_feasible.sample(self._rng.rng, self._n_ei_candidates)
+        else:
+            assert False
+
     def _sample(
         self, study: Study, trial: FrozenTrial, search_space: Dict[str, BaseDistribution]
     ) -> Dict[str, Any]:
@@ -544,13 +575,11 @@ class TPESampler(BaseSampler):
 
         # We divide data into below and above.
         n = sum(trial.state != TrialState.RUNNING for trial in trials)  # Ignore running trials.
+        n_below = self._gamma(n)
         below_trials, above_trials = _split_trials(
             study,
             trials,
-            (
-                ctpe_default_gamma(n, study, trials, self._gamma, n_constraints)
-                if self._ctpe else self._gamma(n)
-            ),
+            ctpe_gamma(n, study, trials, self._gamma, n_constraints) if self._ctpe else n_below,
             self._constraints_func is not None and not self._ctpe,
         )
 
@@ -564,7 +593,7 @@ class TPESampler(BaseSampler):
                 study,
                 trials,
                 search_space,
-                n_below_min=self._gamma(n),
+                n_below_min=n_below,
                 n_constraints=n_constraints,
             )
             mpes_good.extend(_mpes_good)
@@ -574,13 +603,11 @@ class TPESampler(BaseSampler):
         mpe_good = _ParzenEstimatorList(mpes_good)
         mpe_bad = _ParzenEstimatorList(mpes_bad)
 
-        # NOTE: For c-TPE, len(samples_good) == (n_constraints + 1) * self._n_ei_candidates.
-        sample_ratio = [1.0 - q for q in quantiles]  # NOTE: Experimental
-        samples_good = mpe_good.sample(self._rng.rng, self._n_ei_candidates, sample_ratio)
-        acq_fn_vals = self._compute_acquisition_function(
-            samples_good, mpe_good, mpe_bad, quantiles
+        samples_good = self._sample_candidates(
+            study, below_trials, search_space, n_below, mpe_good, quantiles
         )
-        ret = TPESampler._compare(samples_good, acq_fn_vals)
+        acq_func_vals = self._compute_acquisition_func(samples_good, mpe_good, mpe_bad, quantiles)
+        ret = TPESampler._compare(samples_good, acq_func_vals)
 
         for param_name, dist in search_space.items():
             ret[param_name] = dist.to_external_repr(ret[param_name])
@@ -615,7 +642,7 @@ class TPESampler(BaseSampler):
 
         return mpe
 
-    def _compute_acquisition_function(
+    def _compute_acquisition_func(
         self,
         samples: dict[str, np.ndarray],
         mpe_good: _ParzenEstimatorList,
@@ -632,32 +659,32 @@ class TPESampler(BaseSampler):
             )
         # See: c-TPE: Tree-structured Parzen Estimator with Inequality Constraints for
         # Expensive Hyperparameter Optimization (https://arxiv.org/abs/2211.14411)
-        # NOTE: If no constraint exists, acq_fn_vals falls back to the original TPE version.
+        # NOTE: If no constraint exists, acq_func_vals falls back to the original TPE version.
         _quantiles = np.asarray(quantiles)[:, np.newaxis]
         log_first_term = np.log(_quantiles + EPS)
         log_second_term = (
             np.log(1.0 - _quantiles + EPS) + log_likelihoods_bad - log_likelihoods_good
         )
-        acq_fn_vals = np.sum(-np.logaddexp(log_first_term, log_second_term), axis=0)
-        return acq_fn_vals
+        acq_func_vals = np.sum(-np.logaddexp(log_first_term, log_second_term), axis=0)
+        return acq_func_vals
 
     @classmethod
     def _compare(
         cls,
         samples: Dict[str, np.ndarray],
-        acq_fn_vals: np.ndarray,
+        acq_func_vals: np.ndarray,
     ) -> dict[str, int | float]:
         sample_size = next(iter(samples.values())).size
         if sample_size == 0:
             raise ValueError(f"The size of `samples` must be positive, but got {sample_size}.")
 
-        if sample_size != acq_fn_vals.size:
+        if sample_size != acq_func_vals.size:
             raise ValueError(
-                "The sizes of `samples` and `acq_fn_vals` must be same, but got "
-                f"(samples.size, acq_fn_vals.size) = ({sample_size}, {acq_fn_vals.size})."
+                "The sizes of `samples` and `acq_func_vals` must be same, but got "
+                f"(samples.size, acq_func_vals.size) = ({sample_size}, {acq_func_vals.size})."
             )
 
-        best_idx = np.argmax(acq_fn_vals)
+        best_idx = np.argmax(acq_func_vals)
         return {k: v[best_idx].item() for k, v in samples.items()}
 
     @staticmethod
