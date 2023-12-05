@@ -301,7 +301,12 @@ class _ParzenEstimatorList:
         denom = sum(sample_ratio)
         if any(sr < 0 for sr in sample_ratio) or denom == 0.0:
             raise ValueError(
-                f"sample_ratio must be a list of positive float, but got {sample_ratio}"
+                f"sample_ratio must be a list of positive float, but got {sample_ratio}."
+            )
+        if len(self) != len(sample_ratio):
+            raise ValueError(
+                "len(sample_ratio) must be identical to n_constraints+1, "
+                f"but got len(sample_ratio)={len(sample_ratio)}."
             )
 
         sample_sizes = [int(np.ceil(r * size / denom)) if r > 0 else 0 for r in sample_ratio]
@@ -318,8 +323,9 @@ class _ParzenEstimatorList:
                     for param_name in samples
                 }
 
-        indices = rng.choice(np.arange(sum(sample_sizes)), size=size, replace=False)
-        return {k: v[indices] for k, v in samples.items()}
+        sampled_size = sum(sample_sizes)
+        pop_indices = rng.choice(np.arange(sampled_size), size=sampled_size - size, replace=False)
+        return {k: np.delete(v, pop_indices) for k, v in samples.items()}
 
     def log_pdf(self, samples_dict: dict[str, np.ndarray]) -> list[np.ndarray]:
         # Return `log_pdf` from each Parzen estimator.
