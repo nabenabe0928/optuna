@@ -304,7 +304,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             indices_for_cutoff = np.arange(n_trials)[target_values >= cutoff_value]
             indices_for_baseline = np.arange(n_trials)[target_values >= baseline_value]
 
-        if indices_for_baseline.size == 0:
+        if indices_for_baseline.size < 2:
             raise ValueError(
                 f"baseline_quantile={self._baseline_quantile} and "
                 f"baseline_value={self._baseline_value} are too tight."
