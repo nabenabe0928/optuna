@@ -24,23 +24,27 @@ def _get_grids_and_grid_indices_of_trials(
     param_name: str,
     dist: IntDistribution | FloatDistribution,
     trials: list[FrozenTrial],
-    step: int,
+    n_steps: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     if isinstance(dist, FloatDistribution):
         if dist.log:
-            grids = np.linspace(np.log(dist.low), np.log(dist.high), step)
+            grids = np.linspace(np.log(dist.low), np.log(dist.high), n_steps)
             params = np.log([t.params[param_name] for t in trials])
         else:
-            grids = np.linspace(dist.low, dist.high, step)
+            grids = np.linspace(dist.low, dist.high, n_steps)
             params = np.asarray([t.params[param_name] for t in trials])
     elif isinstance(dist, IntDistribution):
         if dist.log:
-            exponent_of_2 = int(np.ceil(np.log(dist.high - dist.low + 1) / np.log(2)))
-            step = min(exponent_of_2, step)
-            grids = np.linspace(np.log(dist.low), np.log(dist.high), step)
+            log_2_n_steps = int(np.ceil(np.log(dist.high - dist.low + 1) / np.log(2)))
+            n_steps_in_log_scale = min(exponent_of_2, log_2_n_steps)
+            grids = np.linspace(np.log(dist.low), np.log(dist.high), n_steps_in_log_scale)
             params = np.log([t.params[param_name] for t in trials])
         else:
-            grids = np.arange(dist.low, dist.high + 1)[:: dist.step]
+            n_grids = (dist.high + 1 - dist.low) // dist.step
+            grids = (
+                np.arange(dist.low, dist.high + 1)[:: dist.step]
+                if n_grids <= n_steps else np.linspace(dist.low, dist.high, n_steps)
+            )
             params = np.asarray([t.params[param_name] for t in trials])
     else:
         assert False, "Should not be reached."
@@ -55,13 +59,13 @@ def _count_numerical_param_in_grid(
     param_name: str,
     dist: IntDistribution | FloatDistribution,
     trials: list[FrozenTrial],
-    step: int,
+    n_steps: int,
 ) -> np.ndarray:
     grids, grid_indices_of_trials = _get_grids_and_grid_indices_of_trials(
         param_name,
         dist,
         trials,
-        step,
+        n_steps,
     )
     unique_vals, counts_in_unique = np.unique(grid_indices_of_trials, return_counts=True)
     counts = np.zeros(grids.size, dtype=np.int32)
@@ -115,7 +119,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
     Args:
         direction:
             TODO.
-        step:
+        n_steps:
             TODO.
         baseline_quantile:
             TODO.
@@ -134,7 +138,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         self,
         direction: str,
         *,
-        step: int = 50,
+        n_steps: int = 50,
         baseline_quantile: float | None = None,
         cutoff_quantile: float | None = None,
         baseline_value: float | None = None,
@@ -144,13 +148,13 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         ]
         | None = None,
     ):
-        if step <= 1:
-            raise ValueError(f"`step` must be larger than 1, but got {step}.")
+        if n_steps <= 1:
+            raise ValueError(f"`n_steps` must be larger than 1, but got {n_steps}.")
         direction_choices = ["minimize", "maximize"]
         if direction not in direction_choices:
             raise ValueError(f"`direction` must be in {direction_choices}, but got {direction}.")
 
-        self._step = step
+        self._n_steps = n_steps
         self._categorical_distance_func = (
             categorical_distance_func if categorical_distance_func is not None else {}
         )
@@ -245,7 +249,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
     ) -> _EfficientParzenEstimator:
         rounded_dist: IntDistribution | CategoricalDistribution
         if isinstance(dist, (IntDistribution, FloatDistribution)):
-            counts = _count_numerical_param_in_grid(param_name, dist, trials, self._step)
+            counts = _count_numerical_param_in_grid(param_name, dist, trials, self._n_steps)
             rounded_dist = IntDistribution(low=0, high=counts.size - 1)
         elif isinstance(dist, CategoricalDistribution):
             counts = _count_categorical_param_in_grid(param_name, dist, trials)
