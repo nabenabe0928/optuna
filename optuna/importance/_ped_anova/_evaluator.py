@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Callable
+from collections.abc import Callable
 import warnings
 
 import numpy as np

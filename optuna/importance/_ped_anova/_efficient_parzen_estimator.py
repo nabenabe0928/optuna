@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Callable
+from collections.abc import Callable
 
 import numpy as np
 
@@ -42,7 +42,7 @@ class _EfficientParzenEstimator(_ParzenEstimator):
             )
 
         self._mixture_distribution = _MixtureOfProductDistribution(
-            weights=counts / self._n_trials,
+            weights=counts[counts > 0] / self._n_trials,
             distributions=[distribution],
         )
 
@@ -66,14 +66,14 @@ class _EfficientParzenEstimator(_ParzenEstimator):
 
         dist_func = self._categorical_distance_func
         if dist_func is None:
-            weights = np.identity(n_choices)
+            weights = np.identity(n_choices)[self._counts > 0]
         else:
-            used_indices = set([i for i, c in enumerate(self._counts) if c != 0])
+            used_indices = set([i for i, c in enumerate(self._counts) if c > 0])
             dists = np.array(
                 [
-                    # If indices are not used, their weights will not be used.
-                    [dist_func(choices[i], c) if i in used_indices else 1.0 for c in choices]
+                    [dist_func(choices[i], c) for c in choices]
                     for i in range(n_choices)
+                    if i in used_indices
                 ]
             )
             max_dists = np.max(dists, axis=1)
@@ -85,14 +85,16 @@ class _EfficientParzenEstimator(_ParzenEstimator):
 
     def _calculate_numerical_distributions_efficient(self) -> _BatchedDistributions:
         n_trials = self._n_trials
-        weights = self._counts / n_trials
-        values = np.arange(self.n_grids)
+        counts_non_zero = self._counts[self._counts > 0]
+        weights = counts_non_zero / n_trials
+        values = np.arange(self.n_grids)[self._counts > 0]
         mean_est = values @ weights
-        sigma_est = np.sqrt((values - mean_est) ** 2 @ self._counts / max(1, n_trials - 1))
+        sigma_est = np.sqrt((values - mean_est) ** 2 @ counts_non_zero / max(1, n_trials - 1))
 
-        count_cum = np.cumsum(self._counts)
-        idx_q25, idx_q75 = np.searchsorted(count_cum, [n_trials // 4, n_trials * 3 // 4])
-        IQR = values[idx_q75] - values[idx_q25]
+        count_cum = np.cumsum(counts_non_zero)
+        idx_q25 = np.searchsorted(count_cum, n_trials // 4, side="left")
+        idx_q75 = np.searchsorted(count_cum, n_trials * 3 // 4, side="right")
+        IQR = values[min(values.size - 1, idx_q75)] - values[idx_q25]
 
         # Scott's rule by Scott, D.W. (1992),
         # Multivariate Density Estimation: Theory, Practice, and Visualization.
@@ -101,7 +103,7 @@ class _EfficientParzenEstimator(_ParzenEstimator):
         sigma_est = max(sigma_est, 0.5 / 1.64)
         return _BatchedDiscreteTruncNormDistributions(
             mu=values,
-            sigma=np.full(self.n_grids, sigma_est),
+            sigma=np.full_like(values, sigma_est, dtype=np.float64),
             low=0,
             high=self.n_grids - 1,
             step=1,
