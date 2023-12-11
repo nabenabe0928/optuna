@@ -79,8 +79,10 @@ class _EfficientParzenEstimator(_ParzenEstimator):
             max_dists = np.max(dists, axis=1)
             coef = np.log(self._n_trials) * np.log(n_choices) / np.log(6)
             weights = np.exp(-((dists / max_dists[:, np.newaxis]) ** 2) * coef)
-            weights /= np.sum(weights, axis=1, keepdims=True)
 
+        # Add 1e-12 to prevent a numerical error.
+        weights += 1e-12
+        weights /= np.sum(weights, axis=1, keepdims=True)
         return _BatchedCategoricalDistributions(weights=weights)
 
     def _calculate_numerical_distributions_efficient(self) -> _BatchedDistributions:

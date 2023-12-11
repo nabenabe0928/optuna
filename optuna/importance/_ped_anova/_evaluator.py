@@ -35,15 +35,16 @@ def _get_grids_and_grid_indices_of_trials(
             params = np.asarray([t.params[param_name] for t in trials])
     elif isinstance(dist, IntDistribution):
         if dist.log:
-            log_2_n_steps = int(np.ceil(np.log(dist.high - dist.low + 1) / np.log(2)))
-            n_steps_in_log_scale = min(exponent_of_2, log_2_n_steps)
+            log_2_n_grids = int(np.ceil(np.log(dist.high - dist.low + 1) / np.log(2)))
+            n_steps_in_log_scale = min(log_2_n_grids, n_steps)
             grids = np.linspace(np.log(dist.low), np.log(dist.high), n_steps_in_log_scale)
             params = np.log([t.params[param_name] for t in trials])
         else:
             n_grids = (dist.high + 1 - dist.low) // dist.step
             grids = (
                 np.arange(dist.low, dist.high + 1)[:: dist.step]
-                if n_grids <= n_steps else np.linspace(dist.low, dist.high, n_steps)
+                if n_grids <= n_steps
+                else np.linspace(dist.low, dist.high, n_steps)
             )
             params = np.asarray([t.params[param_name] for t in trials])
     else:
