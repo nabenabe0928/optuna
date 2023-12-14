@@ -7,86 +7,15 @@ import numpy as np
 
 from optuna.distributions import BaseDistribution
 from optuna.distributions import CategoricalChoiceType
-from optuna.distributions import CategoricalDistribution
-from optuna.distributions import FloatDistribution
-from optuna.distributions import IntDistribution
 from optuna.importance._base import _get_distributions
 from optuna.importance._base import _get_filtered_trials
 from optuna.importance._base import _get_target_values
 from optuna.importance._base import _sort_dict_by_importance
 from optuna.importance._base import BaseImportanceEvaluator
-from optuna.importance._ped_anova._efficient_parzen_estimator import _EfficientParzenEstimator
+from optuna.importance._ped_anova._efficient_parzen_estimator import _build_parzen_estimator
+from optuna.importance.filters import QuantileFilter
 from optuna.study import Study
 from optuna.trial import FrozenTrial
-
-
-def _get_grids_and_grid_indices_of_trials(
-    param_name: str,
-    dist: IntDistribution | FloatDistribution,
-    trials: list[FrozenTrial],
-    n_steps: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    if isinstance(dist, FloatDistribution):
-        if dist.log:
-            grids = np.linspace(np.log(dist.low), np.log(dist.high), n_steps)
-            params = np.log([t.params[param_name] for t in trials])
-        else:
-            grids = np.linspace(dist.low, dist.high, n_steps)
-            params = np.asarray([t.params[param_name] for t in trials])
-    elif isinstance(dist, IntDistribution):
-        if dist.log:
-            log_2_n_grids = int(np.ceil(np.log(dist.high - dist.low + 1) / np.log(2)))
-            n_steps_in_log_scale = min(log_2_n_grids, n_steps)
-            grids = np.linspace(np.log(dist.low), np.log(dist.high), n_steps_in_log_scale)
-            params = np.log([t.params[param_name] for t in trials])
-        else:
-            n_grids = (dist.high + 1 - dist.low) // dist.step
-            grids = (
-                np.arange(dist.low, dist.high + 1)[:: dist.step]
-                if n_grids <= n_steps
-                else np.linspace(dist.low, dist.high, n_steps)
-            )
-            params = np.asarray([t.params[param_name] for t in trials])
-    else:
-        assert False, "Should not be reached."
-
-    step_size = grids[1] - grids[0]
-    # grids[indices[n] - 1] < param - step_size / 2 <= grids[indices[n]]
-    indices = np.searchsorted(grids, params - step_size / 2)
-    return grids, indices
-
-
-def _count_numerical_param_in_grid(
-    param_name: str,
-    dist: IntDistribution | FloatDistribution,
-    trials: list[FrozenTrial],
-    n_steps: int,
-) -> np.ndarray:
-    grids, grid_indices_of_trials = _get_grids_and_grid_indices_of_trials(
-        param_name,
-        dist,
-        trials,
-        n_steps,
-    )
-    unique_vals, counts_in_unique = np.unique(grid_indices_of_trials, return_counts=True)
-    counts = np.zeros(grids.size, dtype=np.int32)
-    counts[unique_vals] += counts_in_unique
-    return counts
-
-
-def _count_categorical_param_in_grid(
-    param_name: str,
-    dist: CategoricalDistribution,
-    trials: list[FrozenTrial],
-) -> np.ndarray:
-    choice_to_index = {c: i for i, c in enumerate(dist.choices)}
-    unique_vals, counts_in_unique = np.unique(
-        [choice_to_index[t.params[param_name]] for t in trials],
-        return_counts=True,
-    )
-    counts = np.zeros(len(dist.choices), dtype=np.int32)
-    counts[unique_vals] += counts_in_unique
-    return counts
 
 
 class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
@@ -118,109 +47,56 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         Please refer to the original work available at https://github.com/nabenabe0928/local-anova.
 
     Args:
-        direction:
+        is_lower_better:
             TODO.
         n_steps:
             TODO.
         baseline_quantile:
             TODO.
-        cutoff_quantile:
-            TODO.
         baseline_value:
-            TODO.
-        cutoff_value:
             TODO.
         categorical_distance_func:
             TODO.
-
+        evaluate_on_local:
+            TODO.
     """
 
     def __init__(
         self,
-        direction: str,
+        is_lower_better: bool,
         *,
         n_steps: int = 50,
         baseline_quantile: float | None = None,
-        cutoff_quantile: float | None = None,
         baseline_value: float | None = None,
-        cutoff_value: float | None = None,
         categorical_distance_func: dict[
             str, Callable[[CategoricalChoiceType, CategoricalChoiceType], float]
         ]
         | None = None,
+        evaluate_on_local: bool = True,
     ):
         if n_steps <= 1:
             raise ValueError(f"`n_steps` must be larger than 1, but got {n_steps}.")
-        direction_choices = ["minimize", "maximize"]
-        if direction not in direction_choices:
-            raise ValueError(f"`direction` must be in {direction_choices}, but got {direction}.")
-
-        self._n_steps = n_steps
-        self._categorical_distance_func = (
-            categorical_distance_func if categorical_distance_func is not None else {}
-        )
-        self._minimize = direction == direction_choices[0]
-        self._validate_input(baseline_quantile, cutoff_quantile, baseline_value, cutoff_value)
+        if baseline_quantile is not None and baseline_value is not None:
+            raise ValueError(
+                "baseline_quantile and baseline_value cannot be specified simultaneously."
+            )
+        if baseline_quantile is not None and not (0.0 <= baseline_quantile <= 1.0):
+            raise ValueError(f"baseline_quantile must be in [0, 1], but got {baseline_quantile}")
         if baseline_value is None and baseline_quantile is None:
             baseline_quantile = 0.1
             warnings.warn(
                 "both baseline_value and baseline_quantile were not specified, "
                 f"so baseline_quantile={baseline_quantile} will be used."
             )
-        if cutoff_value is None and cutoff_quantile is None:
-            cutoff_value = np.inf if self._minimize else -np.inf
 
+        self._n_steps = n_steps
+        self._categorical_distance_func = (
+            categorical_distance_func if categorical_distance_func is not None else {}
+        )
+        self._is_lower_better = is_lower_better
         self._baseline_quantile = baseline_quantile
-        self._cutoff_quantile = cutoff_quantile
         self._baseline_value = baseline_value
-        self._cutoff_value = cutoff_value
-
-    def _validate_input(
-        self,
-        baseline_quantile: float | None,
-        cutoff_quantile: float | None,
-        baseline_value: float | None,
-        cutoff_value: float | None,
-    ) -> None:
-        suffix = "cannot be specified simultaneously."
-        if baseline_quantile is not None and baseline_value is not None:
-            raise ValueError(f"baseline_quantile and baseline_value {suffix}")
-        if cutoff_quantile is not None and cutoff_value is not None:
-            raise ValueError(f"cutoff_quantile and cutoff_value {suffix}")
-
-        suffix += " Only (baseline_quantile, cutoff_quantile) or "
-        suffix += "(baseline_value, cutoff_value) can be specified simultaneously."
-        if baseline_quantile is not None and cutoff_value is not None:
-            raise ValueError(f"baseline_quantile and cutoff_value {suffix}")
-        if cutoff_quantile is not None and baseline_value is not None:
-            raise ValueError(f"baseline_quantile and cutoff_value {suffix}")
-
-        if (
-            baseline_quantile is not None
-            and cutoff_quantile is not None
-            and baseline_quantile > cutoff_quantile
-        ):
-            raise ValueError(
-                "baseline_quantile must be smaller than cutoff_quantile, but got "
-                f"baseline_quantile={baseline_quantile} and cutoff_quantile={cutoff_quantile}."
-            )
-        if baseline_quantile is not None and not (0.0 <= baseline_quantile <= 1.0):
-            raise ValueError(f"baseline_quantile must be in [0, 1], but got {baseline_quantile}")
-        if cutoff_quantile is not None and not (0.0 <= cutoff_quantile <= 1.0):
-            raise ValueError(f"cutoff_quantile must be in [0, 1], but got {cutoff_quantile}")
-
-        if (
-            baseline_value is not None
-            and cutoff_value is not None
-            and (
-                (self._minimize and baseline_value > cutoff_value)
-                or (not self._minimize and baseline_value < cutoff_value)
-            )
-        ):
-            raise ValueError(
-                "baseline_value must be better than cutoff_value, but got "
-                f"baseline_value={baseline_value} and cutoff_value={cutoff_value}."
-            )
+        self._evaluate_on_local = evaluate_on_local
 
     @staticmethod
     def _validate_and_get_params_and_distributions(
@@ -242,100 +118,75 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         assert params is not None
         return params, distributions
 
-    def _build_parzen_estimator(
+    def _get_trials_better_than_baseline(
         self,
-        param_name: str,
-        dist: BaseDistribution,
         trials: list[FrozenTrial],
-    ) -> _EfficientParzenEstimator:
-        rounded_dist: IntDistribution | CategoricalDistribution
-        if isinstance(dist, (IntDistribution, FloatDistribution)):
-            counts = _count_numerical_param_in_grid(param_name, dist, trials, self._n_steps)
-            rounded_dist = IntDistribution(low=0, high=counts.size - 1)
-        elif isinstance(dist, CategoricalDistribution):
-            counts = _count_categorical_param_in_grid(param_name, dist, trials)
-            rounded_dist = dist
-        else:
-            raise ValueError(f"Got an unknown dist with the type {type(dist)}.")
-
-        categorical_distance_func = self._categorical_distance_func.get(param_name, None)
-        return _EfficientParzenEstimator(
-            param_name,
-            rounded_dist,
-            counts,
-            categorical_distance_func,
-        )
-
-    def _get_trials_better_than_cutoff_or_baseline(
-        self,
-        study: Study,
         params: list[str],
         target: Callable[[FrozenTrial], float] | None,
-    ) -> tuple[list[FrozenTrial], list[FrozenTrial]]:
-        trials = _get_filtered_trials(study, params=params, target=target)
+    ) -> list[FrozenTrial]:
         target_values = _get_target_values(trials, target)
-
-        if self._cutoff_value is not None:
-            cutoff_value = self._cutoff_value
-        else:
-            assert self._cutoff_quantile is not None, "Mypy redefinition."
-            cutoff_quantile = (
-                self._cutoff_quantile if self._minimize else 1 - self._cutoff_quantile
-            )
-            cutoff_value = np.quantile(
-                target_values,
-                cutoff_quantile,
-                method="higher" if self._minimize else "lower",
-            )
-
         if self._baseline_value is not None:
-            baseline_value = self._baseline_value
+            mask = (
+                target_values <= self._baseline_value
+                if self._is_lower_better
+                else target_values >= self._baseline_value
+            )
+            top_trials = [t for should_be_in, t in zip(mask, trials) if should_be_in]
         else:
             assert self._baseline_quantile is not None, "Mypy redefinition."
-            baseline_quantile = (
-                self._baseline_quantile if self._minimize else 1 - self._baseline_quantile
-            )
-            baseline_value = np.quantile(
-                target_values,
-                baseline_quantile,
-                method="higher" if self._minimize else "lower",
-            )
+            quantile_filter = QuantileFilter(self._baseline_quantile, self._is_lower_better)
+            top_trials = quantile_filter.filter(trials, target_values)
 
-        n_trials = len(trials)
-        if self._minimize:
-            indices_for_cutoff = np.arange(n_trials)[target_values <= cutoff_value]
-            indices_for_baseline = np.arange(n_trials)[target_values <= baseline_value]
-        else:
-            indices_for_cutoff = np.arange(n_trials)[target_values >= cutoff_value]
-            indices_for_baseline = np.arange(n_trials)[target_values >= baseline_value]
-
-        if indices_for_baseline.size < 2:
+        if len(top_trials) < 2:
             raise ValueError(
                 f"baseline_quantile={self._baseline_quantile} and "
-                f"baseline_value={self._baseline_value} are too tight."
+                f"baseline_value={self._baseline_value} are too tight. Please relax these values."
             )
-        if indices_for_baseline.size < 5:
+        elif len(top_trials) < 5:
             warnings.warn(
                 f"The number of trials better than baseline_quantile={self._baseline_quantile} "
                 f"and baseline_value={self._baseline_value} is less than 5 and the evaluation"
                 " might be inaccurate. Please relax these values."
             )
 
-        return [trials[i] for i in indices_for_cutoff], [trials[i] for i in indices_for_baseline]
+        return top_trials
 
     def _compute_pearson_divergence(
         self,
         param_name: str,
         dist: BaseDistribution,
-        trials_better_than_cutoff: list[FrozenTrial],
         trials_better_than_baseline: list[FrozenTrial],
+        all_trials: list[FrozenTrial],
     ) -> float:
-        pe_cutoff = self._build_parzen_estimator(param_name, dist, trials_better_than_cutoff)
-        pe_baseline = self._build_parzen_estimator(param_name, dist, trials_better_than_baseline)
-        grids = np.arange(pe_cutoff.n_grids)
-        pdf_baseline = pe_baseline.pdf(grids) + 1e-12
-        pdf_cutoff = pe_cutoff.pdf(grids) + 1e-12
-        return float(pdf_cutoff @ ((pdf_baseline / pdf_cutoff - 1) ** 2))
+        cat_dist_func = self._categorical_distance_func.get(param_name, None)
+        pe_top = _build_parzen_estimator(
+            param_name,
+            dist,
+            trials_better_than_baseline,
+            self._n_steps,
+            cat_dist_func,
+        )
+        n_grids = pe_top.n_grids
+        grids = np.arange(n_grids)
+        pdf_top = pe_top.pdf(grids) + 1e-12
+
+        if self._evaluate_on_local:
+            # Compute the integral on the local space.
+            # It gives us the importances of hyperparameters during the search.
+            pe_local = _build_parzen_estimator(
+                param_name,
+                dist,
+                all_trials,
+                self._n_steps,
+                cat_dist_func,
+            )
+            pdf_local = pe_local.pdf(grids) + 1e-12
+        else:
+            # Compute the integral on the global space.
+            # It gives us the importances of hyperparameters in the search space.
+            pdf_local = np.full(n_grids, 1.0 / n_grids)
+
+        return float(pdf_local @ ((pdf_top / pdf_local - 1) ** 2))
 
     def evaluate(
         self,
@@ -359,18 +210,16 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         if len(non_single_distributions) == 0:
             return {}
 
-        (
-            trials_better_than_cutoff,
-            trials_better_than_baseline,
-        ) = self._get_trials_better_than_cutoff_or_baseline(study, params, target)
+        trials = _get_filtered_trials(study, params=params, target=target)
+        trials_better_than_baseline = self._get_trials_better_than_baseline(trials, params, target)
         importance_sum = 0.0
         param_importances = {}
         for param_name, dist in non_single_distributions.items():
             param_importances[param_name] = self._compute_pearson_divergence(
                 param_name,
                 dist,
-                trials_better_than_cutoff,
-                trials_better_than_baseline,
+                trials_better_than_baseline=trials_better_than_baseline,
+                all_trials=trials,
             )
             importance_sum += param_importances[param_name]
 

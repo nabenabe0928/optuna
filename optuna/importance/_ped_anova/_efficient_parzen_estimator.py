@@ -4,14 +4,17 @@ from collections.abc import Callable
 
 import numpy as np
 
+from optuna.distributions import BaseDistribution
 from optuna.distributions import CategoricalChoiceType
 from optuna.distributions import CategoricalDistribution
+from optuna.distributions import FloatDistribution
 from optuna.distributions import IntDistribution
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
 from optuna.samplers._tpe.probability_distributions import _BatchedCategoricalDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedDiscreteTruncNormDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedDistributions
 from optuna.samplers._tpe.probability_distributions import _MixtureOfProductDistribution
+from optuna.trial import FrozenTrial
 
 
 class _EfficientParzenEstimator(_ParzenEstimator):
@@ -110,3 +113,98 @@ class _EfficientParzenEstimator(_ParzenEstimator):
             high=self.n_grids - 1,
             step=1,
         )
+
+
+def _get_grids_and_grid_indices_of_trials(
+    param_name: str,
+    dist: IntDistribution | FloatDistribution,
+    trials: list[FrozenTrial],
+    n_steps: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if isinstance(dist, FloatDistribution):
+        if dist.log:
+            grids = np.linspace(np.log(dist.low), np.log(dist.high), n_steps)
+            params = np.log([t.params[param_name] for t in trials])
+        else:
+            grids = np.linspace(dist.low, dist.high, n_steps)
+            params = np.asarray([t.params[param_name] for t in trials])
+    elif isinstance(dist, IntDistribution):
+        if dist.log:
+            log_2_n_grids = int(np.ceil(np.log(dist.high - dist.low + 1) / np.log(2)))
+            n_steps_in_log_scale = min(log_2_n_grids, n_steps)
+            grids = np.linspace(np.log(dist.low), np.log(dist.high), n_steps_in_log_scale)
+            params = np.log([t.params[param_name] for t in trials])
+        else:
+            n_grids = (dist.high + 1 - dist.low) // dist.step
+            grids = (
+                np.arange(dist.low, dist.high + 1)[:: dist.step]
+                if n_grids <= n_steps
+                else np.linspace(dist.low, dist.high, n_steps)
+            )
+            params = np.asarray([t.params[param_name] for t in trials])
+    else:
+        assert False, "Should not be reached."
+
+    step_size = grids[1] - grids[0]
+    # grids[indices[n] - 1] < param - step_size / 2 <= grids[indices[n]]
+    indices = np.searchsorted(grids, params - step_size / 2)
+    return grids, indices
+
+
+def _count_numerical_param_in_grid(
+    param_name: str,
+    dist: IntDistribution | FloatDistribution,
+    trials: list[FrozenTrial],
+    n_steps: int,
+) -> np.ndarray:
+    grids, grid_indices_of_trials = _get_grids_and_grid_indices_of_trials(
+        param_name,
+        dist,
+        trials,
+        n_steps,
+    )
+    unique_vals, counts_in_unique = np.unique(grid_indices_of_trials, return_counts=True)
+    counts = np.zeros(grids.size, dtype=np.int32)
+    counts[unique_vals] += counts_in_unique
+    return counts
+
+
+def _count_categorical_param_in_grid(
+    param_name: str,
+    dist: CategoricalDistribution,
+    trials: list[FrozenTrial],
+) -> np.ndarray:
+    choice_to_index = {c: i for i, c in enumerate(dist.choices)}
+    unique_vals, counts_in_unique = np.unique(
+        [choice_to_index[t.params[param_name]] for t in trials],
+        return_counts=True,
+    )
+    counts = np.zeros(len(dist.choices), dtype=np.int32)
+    counts[unique_vals] += counts_in_unique
+    return counts
+
+
+def _build_parzen_estimator(
+    param_name: str,
+    dist: BaseDistribution,
+    trials: list[FrozenTrial],
+    n_steps: int,
+    categorical_distance_func: Callable[[CategoricalChoiceType, CategoricalChoiceType], float]
+    | None,
+) -> _EfficientParzenEstimator:
+    rounded_dist: IntDistribution | CategoricalDistribution
+    if isinstance(dist, (IntDistribution, FloatDistribution)):
+        counts = _count_numerical_param_in_grid(param_name, dist, trials, n_steps)
+        rounded_dist = IntDistribution(low=0, high=counts.size - 1)
+    elif isinstance(dist, CategoricalDistribution):
+        counts = _count_categorical_param_in_grid(param_name, dist, trials)
+        rounded_dist = dist
+    else:
+        raise ValueError(f"Got an unknown dist with the type {type(dist)}.")
+
+    return _EfficientParzenEstimator(
+        param_name,
+        rounded_dist,
+        counts,
+        categorical_distance_func,
+    )
