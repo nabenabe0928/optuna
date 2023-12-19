@@ -73,12 +73,17 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         ]
         | None = None,
         evaluate_on_local: bool = True,
+        min_n_top_trials: int = 2,
     ):
         if n_steps <= 1:
             raise ValueError(f"`n_steps` must be larger than 1, but got {n_steps}.")
         if baseline_quantile is not None and baseline_value is not None:
             raise ValueError(
                 "baseline_quantile and baseline_value cannot be specified simultaneously."
+            )
+        if min_n_top_trials < 2:
+            raise ValueError(
+                f"min_n_top_trials must be larger than 1, but got {min_n_top_trials}."
             )
         if baseline_quantile is not None and not (0.0 <= baseline_quantile <= 1.0):
             raise ValueError(f"baseline_quantile must be in [0, 1], but got {baseline_quantile}")
@@ -94,6 +99,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             categorical_distance_func if categorical_distance_func is not None else {}
         )
         self._is_lower_better = is_lower_better
+        self._min_n_top_trials = min_n_top_trials
         self._baseline_quantile = baseline_quantile
         self._baseline_value = baseline_value
         self._evaluate_on_local = evaluate_on_local
@@ -134,15 +140,14 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             top_trials = [t for should_be_in, t in zip(mask, trials) if should_be_in]
         else:
             assert self._baseline_quantile is not None, "Mypy redefinition."
-            quantile_filter = QuantileFilter(self._baseline_quantile, self._is_lower_better)
+            quantile_filter = QuantileFilter(
+                self._baseline_quantile,
+                self._is_lower_better,
+                self._min_n_top_trials,
+            )
             top_trials = quantile_filter.filter(trials, target_values)
 
-        if len(top_trials) < 2:
-            raise ValueError(
-                f"baseline_quantile={self._baseline_quantile} and "
-                f"baseline_value={self._baseline_value} are too tight. Please relax these values."
-            )
-        elif len(top_trials) < 5:
+        if len(top_trials) < 5:
             warnings.warn(
                 f"The number of trials better than baseline_quantile={self._baseline_quantile} "
                 f"and baseline_value={self._baseline_value} is less than 5 and the evaluation"
