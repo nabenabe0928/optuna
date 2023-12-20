@@ -16,8 +16,8 @@ from optuna.samplers._tpe.probability_distributions import _BatchedDistributions
 from optuna.trial import FrozenTrial
 
 
-class _EfficientParzenEstimator(_ParzenEstimator):
-    """Fast implementation for 1D ParzenEstimator."""
+class _ScottParzenEstimator(_ParzenEstimator):
+    """1D ParzenEstimator using the bandwidth selection by Scott's rule."""
 
     def __init__(
         self,
@@ -182,7 +182,7 @@ def _build_parzen_estimator(
     prior_weight: float,
     categorical_distance_func: Callable[[CategoricalChoiceType, CategoricalChoiceType], float]
     | None,
-) -> _EfficientParzenEstimator:
+) -> _ScottParzenEstimator:
     rounded_dist: IntDistribution | CategoricalDistribution
     if isinstance(dist, (IntDistribution, FloatDistribution)):
         counts = _count_numerical_param_in_grid(param_name, dist, trials, n_steps)
@@ -193,7 +193,7 @@ def _build_parzen_estimator(
     else:
         raise ValueError(f"Got an unknown dist with the type {type(dist)}.")
 
-    return _EfficientParzenEstimator(
+    return _ScottParzenEstimator(
         param_name=param_name,
         dist=rounded_dist,
         counts=counts.astype(np.float64),
