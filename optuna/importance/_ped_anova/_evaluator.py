@@ -55,6 +55,10 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             TODO.
         baseline_value:
             TODO.
+        consider_prior:
+            TODO.
+        prior_weight:
+            TODO.
         categorical_distance_func:
             TODO.
         evaluate_on_local:
@@ -68,6 +72,8 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         n_steps: int = 50,
         baseline_quantile: float | None = None,
         baseline_value: float | None = None,
+        consider_prior: bool = False,
+        prior_weight: float = 1.0,
         categorical_distance_func: dict[
             str, Callable[[CategoricalChoiceType, CategoricalChoiceType], float]
         ]
@@ -98,6 +104,8 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         self._categorical_distance_func = (
             categorical_distance_func if categorical_distance_func is not None else {}
         )
+        self._consider_prior = consider_prior
+        self._prior_weight = prior_weight
         self._is_lower_better = is_lower_better
         self._min_n_top_trials = min_n_top_trials
         self._baseline_quantile = baseline_quantile
@@ -165,11 +173,13 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
     ) -> float:
         cat_dist_func = self._categorical_distance_func.get(param_name, None)
         pe_top = _build_parzen_estimator(
-            param_name,
-            dist,
-            trials_better_than_baseline,
-            self._n_steps,
-            cat_dist_func,
+            param_name=param_name,
+            dist=dist,
+            trials=trials_better_than_baseline,
+            n_steps=self._n_steps,
+            consider_prior=self._consider_prior,
+            prior_weight=self._prior_weight,
+            categorical_distance_func=cat_dist_func,
         )
         n_grids = pe_top.n_grids
         grids = np.arange(n_grids)
@@ -179,11 +189,13 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             # Compute the integral on the local space.
             # It gives us the importances of hyperparameters during the search.
             pe_local = _build_parzen_estimator(
-                param_name,
-                dist,
-                all_trials,
-                self._n_steps,
-                cat_dist_func,
+                param_name=param_name,
+                dist=dist,
+                trials=all_trials,
+                n_steps=self._n_steps,
+                consider_prior=self._consider_prior,
+                prior_weight=self._prior_weight,
+                categorical_distance_func=cat_dist_func,
             )
             pdf_local = pe_local.pdf(grids) + 1e-12
         else:

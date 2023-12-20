@@ -10,10 +10,9 @@ from optuna.distributions import CategoricalDistribution
 from optuna.distributions import FloatDistribution
 from optuna.distributions import IntDistribution
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
-from optuna.samplers._tpe.probability_distributions import _BatchedCategoricalDistributions
+from optuna.samplers._tpe.parzen_estimator import _ParzenEstimatorParameters
 from optuna.samplers._tpe.probability_distributions import _BatchedDiscreteTruncNormDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedDistributions
-from optuna.samplers._tpe.probability_distributions import _MixtureOfProductDistribution
 from optuna.trial import FrozenTrial
 
 
@@ -25,28 +24,76 @@ class _EfficientParzenEstimator(_ParzenEstimator):
         param_name: str,
         dist: IntDistribution | CategoricalDistribution,
         counts: np.ndarray,
+        consider_prior: bool,
+        prior_weight: float,
         categorical_distance_func: Callable[[CategoricalChoiceType, CategoricalChoiceType], float]
         | None,
     ):
-        self._param_name = param_name
-        self._search_space = {param_name: dist}
-        self._counts = counts.copy()
-        self._n_trials = np.sum(self._counts)
-        self._n_grids = len(counts)
-        self._categorical_distance_func = categorical_distance_func
-
-        if isinstance(dist, CategoricalDistribution):
-            distribution = self._calculate_categorical_distributions_efficient()
-        elif isinstance(dist, IntDistribution):
-            distribution = self._calculate_numerical_distributions_efficient()
-        else:
+        if not isinstance(dist, (CategoricalDistribution, IntDistribution)):
             raise ValueError(
                 f"Only IntDistribution and CategoricalDistribution are supported, but got {dist}."
             )
 
-        self._mixture_distribution = _MixtureOfProductDistribution(
-            weights=counts[counts > 0] / self._n_trials,
-            distributions=[distribution],
+        self._n_grids = len(counts)
+        self._param_name = param_name
+        self._counts = counts.copy()
+        cat_dist_func: dict[
+            str, Callable[[CategoricalChoiceType, CategoricalChoiceType], float]
+        ] = ({} if categorical_distance_func is None else {param_name: categorical_distance_func})
+        super().__init__(
+            observations={param_name: np.arange(self._n_grids)[counts > 0.0]},
+            search_space={param_name: dist},
+            parameters=_ParzenEstimatorParameters(
+                consider_prior=consider_prior,
+                prior_weight=prior_weight,
+                consider_magic_clip=False,
+                consider_endpoints=False,
+                weights=lambda x: np.empty(0),
+                multivariate=True,
+                categorical_distance_func=cat_dist_func,
+            ),
+            predetermined_weights=counts[counts > 0.0],
+        )
+
+    def _calculate_numerical_distributions(
+        self,
+        observations: np.ndarray,
+        low: float,
+        high: float,
+        step: float | None,
+        parameters: _ParzenEstimatorParameters,
+    ) -> _BatchedDistributions:
+        # NOTE: low and high are actually `int` in this class.
+        # NOTE: The Optuna TPE bandwidth selection is too wide for this analysis.
+        assert step is not None and np.isclose(step, 1.0), "MyPy redefinition."
+
+        n_trials = np.sum(self._counts)
+        counts_non_zero = self._counts[self._counts > 0]
+        weights = counts_non_zero / n_trials
+        mus = np.arange(self.n_grids)[self._counts > 0]
+        mean_est = mus @ weights
+        sigma_est = np.sqrt((mus - mean_est) ** 2 @ counts_non_zero / max(1, n_trials - 1))
+
+        count_cum = np.cumsum(counts_non_zero)
+        idx_q25 = np.searchsorted(count_cum, n_trials // 4, side="left")
+        idx_q75 = np.searchsorted(count_cum, n_trials * 3 // 4, side="right")
+        IQR = mus[min(mus.size - 1, idx_q75)] - mus[idx_q25]
+
+        # Scott's rule by Scott, D.W. (1992),
+        # Multivariate Density Estimation: Theory, Practice, and Visualization.
+        sigma_est = 1.059 * min(IQR / 1.34, sigma_est) * n_trials ** (-0.2)
+        # To avoid numerical errors. 0.5/1.64 means 1.64sigma (=90%) will fit in the target grid.
+        sigmas = np.full_like(mus, max(sigma_est, 0.5 / 1.64), dtype=np.float64)
+        if parameters.consider_prior:
+            mus = np.append(mus, [0.5 * (low + high)])
+            sigmas = np.append(sigmas, [1.0 * (high - low + 1)])
+
+        return _BatchedDiscreteTruncNormDistributions(
+            mu=mus,
+            sigma=sigmas,
+            low=0,
+            high=self.n_grids - 1,
+            step=1,
         )
 
     @property
@@ -55,64 +102,6 @@ class _EfficientParzenEstimator(_ParzenEstimator):
 
     def pdf(self, samples: np.ndarray) -> np.ndarray:
         return np.exp(self.log_pdf({self._param_name: samples}))
-
-    def _calculate_categorical_distributions_efficient(self) -> _BatchedDistributions:
-        distribution = self._search_space[self._param_name]
-        assert isinstance(distribution, CategoricalDistribution), "Mypy redefinition."
-        choices = distribution.choices
-        n_choices = len(choices)
-        if n_choices != self._counts.size:
-            raise ValueError(
-                f"The shape of counts must be n_choices={n_choices}, "
-                f"but got {self._counts.size}."
-            )
-
-        dist_func = self._categorical_distance_func
-        if dist_func is None:
-            weights = np.identity(n_choices)[self._counts > 0]
-        else:
-            used_indices = set([i for i, c in enumerate(self._counts) if c > 0])
-            dists = np.array(
-                [
-                    [dist_func(choices[i], c) for c in choices]
-                    for i in range(n_choices)
-                    if i in used_indices
-                ]
-            )
-            max_dists = np.max(dists, axis=1)
-            coef = np.log(self._n_trials) * np.log(n_choices) / np.log(6)
-            weights = np.exp(-((dists / max_dists[:, np.newaxis]) ** 2) * coef)
-
-        # Add 1e-12 to prevent a numerical error.
-        weights += 1e-12
-        weights /= np.sum(weights, axis=1, keepdims=True)
-        return _BatchedCategoricalDistributions(weights=weights)
-
-    def _calculate_numerical_distributions_efficient(self) -> _BatchedDistributions:
-        n_trials = self._n_trials
-        counts_non_zero = self._counts[self._counts > 0]
-        weights = counts_non_zero / n_trials
-        values = np.arange(self.n_grids)[self._counts > 0]
-        mean_est = values @ weights
-        sigma_est = np.sqrt((values - mean_est) ** 2 @ counts_non_zero / max(1, n_trials - 1))
-
-        count_cum = np.cumsum(counts_non_zero)
-        idx_q25 = np.searchsorted(count_cum, n_trials // 4, side="left")
-        idx_q75 = np.searchsorted(count_cum, n_trials * 3 // 4, side="right")
-        IQR = values[min(values.size - 1, idx_q75)] - values[idx_q25]
-
-        # Scott's rule by Scott, D.W. (1992),
-        # Multivariate Density Estimation: Theory, Practice, and Visualization.
-        sigma_est = 1.059 * min(IQR / 1.34, sigma_est) * n_trials ** (-0.2)
-        # To avoid numerical errors. 0.5/1.64 means 1.64sigma (=90%) will fit in the target grid.
-        sigma_est = max(sigma_est, 0.5 / 1.64)
-        return _BatchedDiscreteTruncNormDistributions(
-            mu=values,
-            sigma=np.full_like(values, sigma_est, dtype=np.float64),
-            low=0,
-            high=self.n_grids - 1,
-            step=1,
-        )
 
 
 def _get_grids_and_grid_indices_of_trials(
@@ -189,6 +178,8 @@ def _build_parzen_estimator(
     dist: BaseDistribution,
     trials: list[FrozenTrial],
     n_steps: int,
+    consider_prior: bool,
+    prior_weight: float,
     categorical_distance_func: Callable[[CategoricalChoiceType, CategoricalChoiceType], float]
     | None,
 ) -> _EfficientParzenEstimator:
@@ -203,8 +194,10 @@ def _build_parzen_estimator(
         raise ValueError(f"Got an unknown dist with the type {type(dist)}.")
 
     return _EfficientParzenEstimator(
-        param_name,
-        rounded_dist,
-        counts,
-        categorical_distance_func,
+        param_name=param_name,
+        dist=rounded_dist,
+        counts=counts.astype(np.float64),
+        consider_prior=consider_prior,
+        prior_weight=prior_weight,
+        categorical_distance_func=categorical_distance_func,
     )
