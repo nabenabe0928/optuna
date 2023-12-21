@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABCMeta
 from abc import abstractmethod
+from collections.abc import Callable
 import warnings
 
 import numpy as np
@@ -26,35 +27,57 @@ def _validate_filter_trials_input(trials: list[FrozenTrial], target_values: np.n
 def _get_topk_value(target_loss_values: np.ndarray, topk: int) -> float:
     if topk > target_loss_values.size or topk < 1:
         raise ValueError(f"topk must be in [1, {target_loss_values.size}], but got {topk}.")
-    topk_index = topk - 1
-    return np.partition(target_loss_values, topk)[topk - 1]
+
+    return np.partition(target_loss_values, topk - 1)[topk - 1]
 
 
-class BaseFilter(metaclass=ABCMeta):
-    _min_n_top_trials: int | None
-
-    def _get_cutoff_value_with_warning(
+class FilterRunner:
+    def __init__(
         self,
-        target_loss_values: np.ndarray,
-        cutoff_value: float,
+        is_lower_better: bool,
         cond_name: str,
-    ) -> float:
+        cond_value: float,
+        min_n_top_trials: int | None,
+        filter_name: str,
+        cutoff_value_calculate_method: Callable[[np.ndarray], float],
+    ):
+        self._is_lower_better = is_lower_better
+        self._cond_name = cond_name
+        self._cond_value = cond_value
+        self._min_n_top_trials = min_n_top_trials
+        self._filter_name = filter_name
+        self._cutoff_value_calculate_method = cutoff_value_calculate_method
+
+    def _get_cutoff_value_with_warning(self, target_loss_values: np.ndarray) -> float:
+        cutoff_value = self._cutoff_value_calculate_method(target_loss_values)
         if self._min_n_top_trials is None:
             return cutoff_value
 
         top_value = _get_topk_value(target_loss_values, self._min_n_top_trials)
         if cutoff_value < top_value:
-            value_instead = top_value if is_lower_better else -top_value
-            cond_value = getattr(self, f"_{cond_name}")
+            value_instead = top_value if self._is_lower_better else -top_value
             msg = [
-                f"The given {cond_name}={cond_val} was too tight to have ",
-                f"{self._min_n_top_trials} trials after applying {self.__class__.__name__}, ",
+                f"The given {self._cond_name}={self._cond_value} was too tight to have ",
+                f"{self._min_n_top_trials} trials after applying {self._filter_name}, ",
                 f"so {value_instead} was used as cutoff_value.",
             ]
             warnings.warn("".join(msg))
 
         return max(cutoff_value, top_value)
 
-    @abstractmethod
     def filter(self, trials: list[FrozenTrial], target_values: np.ndarray) -> list[FrozenTrial]:
+        _validate_filter_trials_input(trials, target_values)
+        target_loss_values = target_values if self._is_lower_better else -target_values
+        mask = target_loss_values <= self._get_cutoff_value_with_warning(target_loss_values)
+        return [t for should_be_in, t in zip(mask, trials) if should_be_in]
+
+
+class BaseFilter(metaclass=ABCMeta):
+    _filter_runner: FilterRunner
+
+    @abstractmethod
+    def _calculate_cutoff_value(self, target_loss_values: np.ndarray) -> float:
         raise NotImplementedError
+
+    def filter(self, trials: list[FrozenTrial], target_values: np.ndarray) -> list[FrozenTrial]:
+        return self._filter_runner.filter(trials, target_values)
