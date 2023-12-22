@@ -51,21 +51,42 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
 
     Args:
         is_lower_better:
-            TODO.
+            Whether `target_value` is better when it is lower.
         n_steps:
-            TODO.
+            The number of grids in continuous domains.
+            For example, if one of the parameters has the domain of [`low`, `high`],
+            we discretize it as `np.linspace(low, high, n_steps)`.
         baseline_quantile:
-            TODO.
+            Compute the importance of achieving top-`baseline_quantile` quantile `target_value`.
+            For example, `baseline_quantile=0.1` means that the importances give the information
+            of which parameters were important to achieve the top-10% performance during
+            the specified `study`.
         baseline_value:
-            TODO.
+            Compute the importance of achieving `baseline_value`.
+            For example, `baseline_value=5.0` with `is_lower_better=True` means that
+            the importances give the information of which parameters were important to achieve
+            `target_value <= 5.0` during the specified `study`.
         consider_prior:
-            TODO.
+            Whether we use non-informative prior to regularize the Parzen estimators.
+            This might be helpful to avoid overfitting.
         prior_weight:
-            TODO.
+            How much we regularize the Parzen estimator fitting.
+            The larger `prior_weight` becomes, the more we regularize the fitting.
+            All the observations receive `weight=1.0`, so the default value is `prior_weight=1.0`.
         categorical_distance_func:
-            TODO.
+            A dictionary of distance functions for categorical parameters. The key is the name of
+            the categorical parameter and the value is a distance function that takes two
+            :class:`~optuna.distributions.CategoricalChoiceType` s and returns a :obj:`float`
+            value. The distance function must return a non-negative value.
+
+            While categorical choices are handled equally by default, this option allows users to
+            specify prior knowledge on the structure of categorical parameters.
         evaluate_on_local:
-            TODO.
+            Whether we measure the importance in the local or global space.
+            If `True`, the importances imply how importance each parameter is during `study`.
+            Meanwhile, `evaluate_on_local=False` gives the importances in the specified
+            `search_space`. `evaluate_on_local=True` is especially useful when users modify search
+            space during the specified `study`.
     """
 
     _N_MINIMAL_TOP_TRIALS = 5
