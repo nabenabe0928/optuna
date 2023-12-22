@@ -21,7 +21,7 @@ class CutOffFilter(BaseFilter):
             filter_name=self.__class__.__name__,
             cutoff_value_calculate_method=self._calculate_cutoff_value,
         )
-        self._cutoff_value = cutoff_value
+        self._cutoff_value = cutoff_value if is_lower_better else -cutoff_value
 
     def _calculate_cutoff_value(self, target_loss_values: np.ndarray) -> float:
         return self._cutoff_value

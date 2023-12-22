@@ -151,7 +151,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         assert params is not None
         return params, distributions
 
-    def _get_trials_better_than_baseline(
+    def _get_top_trials(
         self,
         trials: list[FrozenTrial],
         params: list[str],
@@ -168,6 +168,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         elif self._n_top_trials is not None:
             filter_ = TopKFilter(self._n_top_trials, is_lower_better)
         else:
+            # TODO(nabenabe0928): Add ParetoFront filter, filter by number etc.
             assert False, "Should not be reached."
 
         top_trials = filter_.filter(trials, target_values)
@@ -178,6 +179,10 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
                 f"{self._N_MINIMAL_TOP_TRIALS} and the evaluation might be inaccurate. "
                 "Please relax these values."
             )
+        if target_values.size == len(top_trials):
+            warnings.warn(
+                "All the trials were considered to be in top and it gives equal importances."
+            )
 
         return top_trials
 
@@ -185,14 +190,14 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         self,
         param_name: str,
         dist: BaseDistribution,
-        trials_better_than_baseline: list[FrozenTrial],
+        top_trials: list[FrozenTrial],
         all_trials: list[FrozenTrial],
     ) -> float:
         cat_dist_func = self._categorical_distance_func.get(param_name, None)
         pe_top = _build_parzen_estimator(
             param_name=param_name,
             dist=dist,
-            trials=trials_better_than_baseline,
+            trials=top_trials,
             n_steps=self._n_steps,
             consider_prior=self._consider_prior,
             prior_weight=self._prior_weight,
@@ -245,18 +250,24 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             return {}
 
         trials = _get_filtered_trials(study, params=params, target=target)
-        trials_better_than_baseline = self._get_trials_better_than_baseline(trials, params, target)
+        top_trials = self._get_top_trials(trials, params, target)
         importance_sum = 0.0
         param_importances = {}
         for param_name, dist in non_single_distributions.items():
             param_importances[param_name] = self._compute_pearson_divergence(
                 param_name,
                 dist,
-                trials_better_than_baseline=trials_better_than_baseline,
+                top_trials=top_trials,
                 all_trials=trials,
             )
             importance_sum += param_importances[param_name]
 
-        param_importances = {k: v / importance_sum for k, v in param_importances.items()}
+        if importance_sum > 0.0:
+            param_importances = {k: v / importance_sum for k, v in param_importances.items()}
+        else:
+            assert len(trials) == len(top_trials), "Unexpected Error."
+            n_params = len(param_importances)
+            param_importances = {k: 1.0 / n_params for k in param_importances}
+
         param_importances.update({k: 0.0 for k in single_distributions})
         return _sort_dict_by_importance(param_importances)
