@@ -9,14 +9,10 @@ from optuna.distributions import BaseDistribution
 from optuna.distributions import CategoricalChoiceType
 from optuna.importance._base import _get_distributions
 from optuna.importance._base import _get_filtered_trials
-from optuna.importance._base import _get_target_values
 from optuna.importance._base import _sort_dict_by_importance
 from optuna.importance._base import BaseImportanceEvaluator
 from optuna.importance._ped_anova._scott_parzen_estimator import _build_parzen_estimator
-from optuna.importance.filters import BaseFilter
-from optuna.importance.filters import CutOffFilter
-from optuna.importance.filters import QuantileFilter
-from optuna.importance.filters import TopKFilter
+from optuna.importance.filters import get_trial_filter
 from optuna.study import Study
 from optuna.trial import FrozenTrial
 
@@ -66,6 +62,16 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             For example, `baseline_value=5.0` with `is_lower_better=True` means that
             the importances give the information of which parameters were important to achieve
             `target_value <= 5.0` during the specified `study`.
+        n_top_trials:
+            Compute the importance of achieving top-`n_top_trials` trials.
+        min_n_top_trials:
+            How many `trials` must be included in `top_trials`.
+        custom_filter_trial:
+            A function that returns True or False given `trial`.
+            If True, `trial` will remain in the return.
+            For example, if you have a list of trial numbers to filter `trial_numbers`,
+            we can do `lambda trial: trial.number in trial_numbers_set`
+            given `trial_numbers_set = set(trial_numbers)`.
         consider_prior:
             Whether we use non-informative prior to regularize the Parzen estimators.
             This might be helpful to avoid overfitting.
@@ -100,6 +106,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         baseline_quantile: float | None = None,
         baseline_value: float | None = None,
         n_top_trials: int | None = None,
+        custom_filter_trial: Callable[[FrozenTrial], bool] | None = None,
         consider_prior: bool = False,
         prior_weight: float = 1.0,
         categorical_distance_func: dict[
@@ -111,28 +118,25 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
     ):
         if n_steps <= 1:
             raise ValueError(f"`n_steps` must be larger than 1, but got {n_steps}.")
-        if sum(v is not None for v in [baseline_quantile, baseline_value, n_top_trials]) > 1:
-            raise ValueError(
-                "Only one of [baseline_quantile, baseline_value, n_top_trials] can be specified."
-            )
 
         if n_top_trials is not None and n_top_trials < min_n_top_trials:
             raise ValueError(
                 f"n_top_trials={n_top_trials} must be larger than "
                 f"min_n_top_trials={min_n_top_trials}."
             )
+        if min_n_top_trials < 2:
+            raise ValueError(
+                f"min_n_top_trials must be larger than 1, but got {min_n_top_trials}."
+            )
         if n_top_trials is not None and n_top_trials < self._N_MINIMAL_TOP_TRIALS:
             warnings.warn(
                 f"n_top_trials={n_top_trials} (< {self._N_MINIMAL_TOP_TRIALS}) is too small "
                 "to get accurate evaluation. Please relax this value."
             )
-        if min_n_top_trials < 2:
-            raise ValueError(
-                f"min_n_top_trials must be larger than 1, but got {min_n_top_trials}."
-            )
-        if baseline_quantile is not None and not (0.0 <= baseline_quantile <= 1.0):
-            raise ValueError(f"baseline_quantile must be in [0, 1], but got {baseline_quantile}")
-        if baseline_value is None and baseline_quantile is None and n_top_trials is None:
+        if all(
+            v is None
+            for v in [baseline_value, n_top_trials, baseline_quantile, custom_filter_trial]
+        ):
             baseline_quantile = self._DEFAULT_BASELINE_QUANTILE
             warnings.warn(
                 "baseline_value, baseline_quantile, and n_top_trials were not specified, "
@@ -150,6 +154,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         self._n_top_trials = n_top_trials
         self._baseline_quantile = baseline_quantile
         self._baseline_value = baseline_value
+        self._custom_filter_trial = custom_filter_trial
         self._evaluate_on_local = evaluate_on_local
 
     @staticmethod
@@ -178,21 +183,17 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         params: list[str],
         target: Callable[[FrozenTrial], float] | None,
     ) -> list[FrozenTrial]:
-        target_values = _get_target_values(trials, target)
-        min_n_top_trials = self._min_n_top_trials
-        is_lower_better = self._is_lower_better
-        filter_: BaseFilter
-        if self._baseline_value is not None:
-            filter_ = CutOffFilter(self._baseline_value, is_lower_better, min_n_top_trials)
-        elif self._baseline_quantile is not None:
-            filter_ = QuantileFilter(self._baseline_quantile, is_lower_better, min_n_top_trials)
-        elif self._n_top_trials is not None:
-            filter_ = TopKFilter(self._n_top_trials, is_lower_better)
-        else:
-            # TODO(nabenabe0928): Add ParetoFront filter, filter by number etc.
-            assert False, "Should not be reached."
+        trial_filter = get_trial_filter(
+            topk=self._n_top_trials,
+            cutoff_value=self._baseline_value,
+            quantile=self._baseline_quantile,
+            custom_filter_trial=self._custom_filter_trial,
+            is_lower_better=self._is_lower_better,
+            min_n_top_trials=self._min_n_top_trials,
+            target=target,
+        )
+        top_trials = trial_filter(trials)
 
-        top_trials = filter_.filter(trials, target_values)
         if self._n_top_trials is not None and len(top_trials) < self._N_MINIMAL_TOP_TRIALS:
             warnings.warn(
                 f"The number of trials better than baseline_quantile={self._baseline_quantile} "
@@ -200,7 +201,7 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
                 f"{self._N_MINIMAL_TOP_TRIALS} and the evaluation might be inaccurate. "
                 "Please relax these values."
             )
-        if target_values.size == len(top_trials):
+        if len(trials) == len(top_trials):
             warnings.warn(
                 "All the trials were considered to be in top and it gives equal importances."
             )
