@@ -80,4 +80,17 @@ class BaseFilter(metaclass=ABCMeta):
         raise NotImplementedError
 
     def filter(self, trials: list[FrozenTrial], target_values: np.ndarray) -> list[FrozenTrial]:
+        """Filter trials based on target_values.
+
+        Args:
+            trials:
+                A list of trials to which the filter is applied.
+            target_values:
+                An array of target_values that defines the value of each trial.
+                The shape must be (len(trials), ) and target_values[i] is the value of trials[i].
+
+        Returns:
+            A list of filtered trials.
+        """
+
         return self._filter_runner.filter(trials, target_values)
