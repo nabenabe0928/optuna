@@ -5,6 +5,7 @@ from typing import Any
 from typing import Callable
 from typing import cast
 from typing import Dict
+from typing import Literal
 from typing import Optional
 from typing import Sequence
 import warnings
@@ -23,6 +24,7 @@ from optuna.samplers._base import BaseSampler
 from optuna.samplers._lazy_random_state import LazyRandomState
 from optuna.samplers._random import RandomSampler
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
+from optuna.samplers._tpe.parzen_estimator import _ParzenEstimatorList
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimatorParameters
 from optuna.search_space import IntersectionSearchSpace
 from optuna.search_space.group_decomposed import _GroupDecomposedSearchSpace
@@ -37,12 +39,63 @@ EPS = 1e-12
 _logger = get_logger(__name__)
 
 
+def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
+    # TODO(nabenabe0928): Migrate this to `trial` or `study` once it is ready.
+    n_constraints = max(
+        len(t.system_attrs[_CONSTRAINTS_KEY]) for t in trials if _CONSTRAINTS_KEY in t.system_attrs
+    )
+    for t in trials:
+        if _CONSTRAINTS_KEY not in t.system_attrs:
+            continue
+
+        n_constraints_of_trial = len(t.system_attrs[_CONSTRAINTS_KEY])
+        if n_constraints_of_trial < n_constraints:
+            raise ValueError(
+                "The number of constraints must be consistent during an optimization, but got "
+                f"n_constraints={n_constraints_of_trial} at Trial#{t.number}."
+            )
+
+    return n_constraints
+
+
+def _is_trial_feasible(trial: FrozenTrial, n_constraints: int) -> bool:
+    if n_constraints == 0:
+        return True
+
+    # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
+    return all(c <= 0 for c in trial.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
+
+
 def default_gamma(x: int) -> int:
     return min(int(np.ceil(0.1 * x)), 25)
 
 
 def hyperopt_default_gamma(x: int) -> int:
     return min(int(np.ceil(0.25 * np.sqrt(x))), 25)
+
+
+def ctpe_gamma(
+    x: int,
+    study: Study,
+    trials: list[FrozenTrial],
+    gamma: Callable[[int], int],
+    n_constraints: int,
+) -> int:
+    if n_constraints == 0:
+        return gamma(x)
+
+    sorted_trials, _ = _split_trials(
+        study=study,
+        trials=trials,
+        n_below=len(trials),
+        constraints_enabled=False,
+        order_by="value",
+    )
+    feasible_masks = [_is_trial_feasible(t, n_constraints) for t in sorted_trials]
+    n_below = gamma(x)
+    # sorted_trials[n_below_modified] is the top gamma-th feasible trial.
+    n_below_modified = int(np.searchsorted(np.cumsum(feasible_masks), n_below, side="left")) + 1
+    return min(n_below_modified, len(trials))
 
 
 def default_weights(x: int) -> np.ndarray:
@@ -285,6 +338,7 @@ class TPESampler(BaseSampler):
         warn_independent_sampling: bool = True,
         constant_liar: bool = False,
         constraints_func: Optional[Callable[[FrozenTrial], Sequence[float]]] = None,
+        ctpe: bool = False,
         categorical_distance_func: Optional[
             dict[str, Callable[[CategoricalChoiceType, CategoricalChoiceType], float]]
         ] = None,
@@ -313,6 +367,7 @@ class TPESampler(BaseSampler):
         self._search_space = IntersectionSearchSpace(include_pruned=True)
         self._constant_liar = constant_liar
         self._constraints_func = constraints_func
+        self._ctpe = ctpe and constraints_func is not None
 
         if multivariate:
             warnings.warn(
@@ -457,6 +512,57 @@ class TPESampler(BaseSampler):
                     values[param_name].append(distribution.to_internal_repr(param))
         return {k: np.asarray(v) for k, v in values.items()}
 
+    def _get_parzen_estimators_and_quantiles_for_ctpe(
+        self,
+        study: Study,
+        trials: list[FrozenTrial],
+        search_space: dict[str, BaseDistribution],
+        n_below_min: int,
+        n_constraints: int,
+    ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
+        mpes_good, mpes_bad, quantiles = [], [], []
+        feasible_trials_list, infeasible_trials_list = _split_trials_for_constraints(
+            trials,
+            n_below_min,
+            n_constraints,
+        )
+        for feas_trials, infeas_trials in zip(feasible_trials_list, infeasible_trials_list):
+            mpes_good.append(self._build_parzen_estimator(study, search_space, feas_trials))
+            mpes_bad.append(self._build_parzen_estimator(study, search_space, infeas_trials))
+            quantiles.append(len(feas_trials) / max(1, len(feas_trials) + len(infeas_trials)))
+
+        return mpes_good, mpes_bad, quantiles
+
+    def _sample_candidates(
+        self,
+        study: Study,
+        below_trials: list[FrozenTrial],
+        search_space: dict[str, BaseDistribution],
+        n_below_min: int,
+        mpe_good: _ParzenEstimatorList,
+        quantiles: list[float],
+    ) -> dict[str, np.ndarray]:
+        n_constraints = len(mpe_good) - 1
+        if n_constraints == 0 or not self._ctpe:
+            return mpe_good.sample(self._rng.rng, self._n_ei_candidates, sample_ratio=[1.0])
+
+        below_feasible_trials = [t for t in below_trials if _is_trial_feasible(t, n_constraints)]
+        if len(below_feasible_trials) < n_below_min:
+            # The contribution of the acquisition function for objective becomes zero,
+            # so we drop samples from the Parzen estimator for objective.
+            sample_ratio = [0.0] + [1.0 - q for q in quantiles[1:]]
+            return mpe_good.sample(self._rng.rng, self._n_ei_candidates, sample_ratio)
+        elif len(below_feasible_trials) == n_below_min:
+            mpe_below_feasible = self._build_parzen_estimator(
+                study,
+                search_space,
+                below_feasible_trials,
+                handle_below=True,
+            )
+            return mpe_below_feasible.sample(self._rng.rng, self._n_ei_candidates)
+        else:
+            assert False
+
     def _sample(
         self, study: Study, trial: FrozenTrial, search_space: Dict[str, BaseDistribution]
     ) -> Dict[str, Any]:
@@ -466,26 +572,43 @@ class TPESampler(BaseSampler):
             states = [TrialState.COMPLETE, TrialState.PRUNED]
         use_cache = not self._constant_liar
         trials = study._get_trials(deepcopy=False, states=states, use_cache=use_cache)
+        n_constraints = _infer_n_constraints(trials) if self._constraints_func is not None else 0
 
         # We divide data into below and above.
         n = sum(trial.state != TrialState.RUNNING for trial in trials)  # Ignore running trials.
+        n_below = self._gamma(n)
         below_trials, above_trials = _split_trials(
             study,
             trials,
-            self._gamma(n),
-            self._constraints_func is not None,
+            ctpe_gamma(n, study, trials, self._gamma, n_constraints) if self._ctpe else n_below,
+            self._constraints_func is not None and not self._ctpe,
         )
 
-        mpe_below = self._build_parzen_estimator(
-            study, search_space, below_trials, handle_below=True
-        )
-        mpe_above = self._build_parzen_estimator(
-            study, search_space, above_trials, handle_below=False
-        )
+        mpes_good = [
+            self._build_parzen_estimator(study, search_space, below_trials, handle_below=True)
+        ]
+        mpes_bad = [self._build_parzen_estimator(study, search_space, above_trials)]
+        quantiles = [len(below_trials) / max(1, len(below_trials) + len(above_trials))]
+        if self._ctpe:
+            _mpes_good, _mpes_bad, _quantiles = self._get_parzen_estimators_and_quantiles_for_ctpe(
+                study,
+                trials,
+                search_space,
+                n_below_min=n_below,
+                n_constraints=n_constraints,
+            )
+            mpes_good.extend(_mpes_good)
+            mpes_bad.extend(_mpes_bad)
+            quantiles.extend(_quantiles)
 
-        samples_below = mpe_below.sample(self._rng.rng, self._n_ei_candidates)
-        acq_func_vals = self._compute_acquisition_func(samples_below, mpe_below, mpe_above)
-        ret = TPESampler._compare(samples_below, acq_func_vals)
+        mpe_good = _ParzenEstimatorList(mpes_good)
+        mpe_bad = _ParzenEstimatorList(mpes_bad)
+
+        samples_good = self._sample_candidates(
+            study, below_trials, search_space, n_below, mpe_good, quantiles
+        )
+        acq_func_vals = self._compute_acquisition_func(samples_good, mpe_good, mpe_bad, quantiles)
+        ret = TPESampler._compare(samples_good, acq_func_vals)
 
         for param_name, dist in search_space.items():
             ret[param_name] = dist.to_external_repr(ret[param_name])
@@ -507,7 +630,7 @@ class TPESampler(BaseSampler):
                     all((param_name in trial.params) for param_name in search_space)
                 )
             weights_below = _calculate_weights_below_for_multi_objective(
-                study, trials, self._constraints_func
+                study, trials, constraints_func=self._constraints_func if not self._ctpe else None,
             )[param_mask_below]
             mpe = _ParzenEstimator(
                 observations, search_space, self._parzen_estimator_parameters, weights_below
@@ -520,12 +643,27 @@ class TPESampler(BaseSampler):
     def _compute_acquisition_func(
         self,
         samples: dict[str, np.ndarray],
-        mpe_below: _ParzenEstimator,
-        mpe_above: _ParzenEstimator,
+        mpe_good: _ParzenEstimatorList,
+        mpe_bad: _ParzenEstimatorList,
+        quantiles: list[float],
     ) -> np.ndarray:
-        log_likelihoods_below = mpe_below.log_pdf(samples)
-        log_likelihoods_above = mpe_above.log_pdf(samples)
-        acq_func_vals = log_likelihoods_below - log_likelihoods_above
+        log_likelihoods_good = mpe_good.log_pdf(samples)
+        log_likelihoods_bad = mpe_bad.log_pdf(samples)
+        if not self._ctpe and (len(log_likelihoods_good) != 1 or len(log_likelihoods_bad) != 1):
+            raise ValueError(
+                "The number of Parzen estimators for below and above in non c-TPE cases "
+                f"must be one, but got len(mpe_good)={len(mpe_good)} and "
+                f"len(mpe_bad)={len(mpe_bad)}."
+            )
+        # See: c-TPE: Tree-structured Parzen Estimator with Inequality Constraints for
+        # Expensive Hyperparameter Optimization (https://arxiv.org/abs/2211.14411)
+        # NOTE: If no constraint exists, acq_func_vals falls back to the original TPE version.
+        _quantiles = np.asarray(quantiles)[:, np.newaxis]
+        log_first_term = np.log(_quantiles + EPS)
+        log_second_term = (
+            np.log(1.0 - _quantiles + EPS) + log_likelihoods_bad - log_likelihoods_good
+        )
+        acq_func_vals = np.sum(-np.logaddexp(log_first_term, log_second_term), axis=0)
         return acq_func_vals
 
     @classmethod
@@ -627,6 +765,7 @@ def _split_trials(
     trials: list[FrozenTrial],
     n_below: int,
     constraints_enabled: bool,
+    order_by: Literal["value", "number"] = "number",
 ) -> tuple[list[FrozenTrial], list[FrozenTrial]]:
     complete_trials = []
     pruned_trials = []
@@ -656,8 +795,10 @@ def _split_trials(
 
     below_trials = below_complete + below_pruned + below_infeasible
     above_trials = above_complete + above_pruned + above_infeasible + running_trials
-    below_trials.sort(key=lambda trial: trial.number)
-    above_trials.sort(key=lambda trial: trial.number)
+
+    if order_by == "number":
+        below_trials.sort(key=lambda trial: trial.number)
+        above_trials.sort(key=lambda trial: trial.number)
 
     return below_trials, above_trials
 
@@ -725,13 +866,10 @@ def _split_complete_trials_multi_objective(
         selected_indices = _solve_hssp(rank_i_lvals, rank_i_indices, subset_size, reference_point)
         indices_below[last_idx:] = selected_indices
 
-    below_trials = []
-    above_trials = []
-    for index in range(len(trials)):
-        if index in indices_below:
-            below_trials.append(trials[index])
-        else:
-            above_trials.append(trials[index])
+    # NOTE: At least, `below_trials` must be sorted for c-TPE.
+    indices_above = np.setdiff1d(np.arange(len(trials)), indices_below)
+    below_trials = [trials[i] for i in indices_below]
+    above_trials = [trials[i] for i in indices_above]
     return below_trials, above_trials
 
 
@@ -777,6 +915,34 @@ def _split_infeasible_trials(
     n_below = min(n_below, len(trials))
     sorted_trials = sorted(trials, key=_get_infeasible_trial_score)
     return sorted_trials[:n_below], sorted_trials[n_below:]
+
+
+def _split_trials_for_constraints(
+    trials: list[FrozenTrial],
+    n_below_min: int,
+    n_constraints: int,
+) -> tuple[list[list[FrozenTrial]], list[list[FrozenTrial]]]:
+    if n_constraints == 0:
+        warnings.warn("No trials with constraint values were found.")
+        return [], []
+
+    indices = np.arange(len(trials))
+    cstr_indices = np.array(
+        [i for i, t in enumerate(trials) if _CONSTRAINTS_KEY in t.system_attrs]
+    )
+    # cstr_vals.shape = (n_constraints, len(cstr_indices))
+    cstr_vals = np.array([trials[i].system_attrs[_CONSTRAINTS_KEY] for i in cstr_indices]).T
+    # Find the n_below_min-th minimum value in each constraint.
+    thresholds = np.partition(cstr_vals, kth=n_below_min - 1, axis=-1)[:, n_below_min - 1]
+    feasible_trials_list, infeasible_trials_list = [], []
+    for threshold, cstr_val in zip(thresholds, cstr_vals):
+        # Include at least the indices up to the n_below_min-th min constraint value.
+        feasible_indices = cstr_indices[cstr_val <= max(0, threshold)]
+        infeasible_indices = np.setdiff1d(indices, feasible_indices)
+        feasible_trials_list.append([trials[idx] for idx in feasible_indices])
+        infeasible_trials_list.append([trials[idx] for idx in infeasible_indices])
+
+    return feasible_trials_list, infeasible_trials_list
 
 
 def _calculate_weights_below_for_multi_objective(
