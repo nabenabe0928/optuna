@@ -288,10 +288,7 @@ class _ParzenEstimator:
 
 
 def _sample(
-    mpes: list[_ParzenEstimator],
-    rng: np.random.RandomState,
-    size: int,
-    sample_ratio: list[float],
+    mpes: list[_ParzenEstimator], rng: np.random.RandomState, size: int, sample_ratio: list[float]
 ) -> dict[str, np.ndarray]:
     denom = sum(sample_ratio)
     if any(ratio < 0 for ratio in sample_ratio) or denom == 0.0:

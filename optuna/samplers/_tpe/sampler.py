@@ -514,11 +514,9 @@ class TPESampler(BaseSampler):
     ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
         mpes_below, mpes_above = [], []
         feas_trials_list, infeas_trials_list, qs = _split_trials_and_get_quantiles_for_constraints(
-            trials=trials,
-            n_below_min=n_below_min,
-            n_constraints=n_constraints,
+            trials=trials, n_below_min=n_below_min, n_constraints=n_constraints
         )
-        handle_below = False
+        handle_below = False  # below is for objective, but not for feasible.
         for feas_trials, infeas_trials in zip(feas_trials_list, infeas_trials_list):
             mpes_below.append(self._build_mpe(study, search_space, feas_trials, handle_below))
             mpes_above.append(self._build_mpe(study, search_space, infeas_trials, handle_below))
