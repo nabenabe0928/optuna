@@ -1,8 +1,69 @@
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
+from optuna.samplers._base import _CONSTRAINTS_KEY
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
+from optuna.trial import FrozenTrial
+
+
+def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
+    # TODO(nabenabe0928): Migrate this to `trial` or `study` once it is ready.
+    constraints = [t.system_attrs.get(_CONSTRAINTS_KEY) for t in trials]
+    n_constraints = max([len(c) for c in constraints if c is not None], default=0)
+    for t, c in zip(trials, constraints):
+        if c is None:
+            continue
+
+        n_constraints_of_trial = len(c)
+        if n_constraints_of_trial < n_constraints:
+            raise ValueError(
+                "The number of constraints must be consistent during an optimization, but got "
+                f"n_constraints={n_constraints_of_trial} at Trial#{t.number}."
+            )
+
+    return n_constraints
+
+
+def _is_trial_feasible(trial: FrozenTrial, n_constraints: int) -> bool:
+    if n_constraints == 0:
+        return True
+
+    # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
+    return all(c <= 0 for c in trial.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
+
+
+def _split_trials_and_get_quantiles_for_constraints(
+    trials: list[FrozenTrial],
+    n_below_min: int,
+    n_constraints: int,
+) -> tuple[list[list[FrozenTrial]], list[list[FrozenTrial]], list[float]]:
+    if n_constraints == 0:
+        warnings.warn("No trials with constraint values were found.")
+        return [], [], []
+
+    indices = np.arange(len(trials))
+    constraints = [t.system_attrs.get(_CONSTRAINTS_KEY) for t in trials]
+    indices_for_constraints = np.array([i for i, c in enumerate(constraints) if c is not None])
+    # constraint_vals.shape = (n_constraints, len(indices_for_constraints))
+    constraint_vals = np.array([constraints[i] for i in indices_for_constraints]).T
+    # Find the n_below_min-th minimum value in each constraint.
+    thresholds = np.partition(constraint_vals, kth=n_below_min - 1, axis=-1)[:, n_below_min - 1]
+    feasible_trials_list, infeasible_trials_list = [], []
+    for threshold, constraint_val in zip(thresholds, constraint_vals):
+        # TODO(nabenabe0928): Adapt to boolean case (cannot expand for boolean case).
+        # Include at least the indices up to the n_below_min-th min constraint value.
+        feasible_indices = indices_for_constraints[constraint_val <= max(0, threshold)]
+        infeasible_indices = np.setdiff1d(indices, feasible_indices)
+        feasible_trials_list.append([trials[idx] for idx in feasible_indices])
+        infeasible_trials_list.append([trials[idx] for idx in infeasible_indices])
+
+    n_trials_with_constraints = max(1, indices_for_constraints.size)
+    n_feasibles = np.sum(constraint_vals <= thresholds[:, np.newaxis], axis=1)
+    quantiles = n_feasibles / n_trials_with_constraints
+    return feasible_trials_list, infeasible_trials_list, quantiles.tolist()
 
 
 def _sample(
