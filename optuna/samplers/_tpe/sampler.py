@@ -22,10 +22,10 @@ from optuna.samplers._base import _process_constraints_after_trial
 from optuna.samplers._base import BaseSampler
 from optuna.samplers._lazy_random_state import LazyRandomState
 from optuna.samplers._random import RandomSampler
-from optuna.samplers._tpe._ctpe import _infer_n_constraints
-from optuna.samplers._tpe._ctpe import _is_trial_feasible
-from optuna.samplers._tpe._ctpe import _sample
-from optuna.samplers._tpe._ctpe import _split_trials_and_get_quantiles_for_constraints
+from optuna.samplers._tpe._ctpe_helpers import _infer_n_constraints
+from optuna.samplers._tpe._ctpe_helpers import _is_trial_feasible
+from optuna.samplers._tpe._ctpe_helpers import _sample
+from optuna.samplers._tpe._ctpe_helpers import _split_trials_and_get_quantiles_for_constraints
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimatorParameters
 from optuna.search_space import IntersectionSearchSpace
