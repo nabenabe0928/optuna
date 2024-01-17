@@ -72,7 +72,7 @@ def _ctpe_gamma(
     # because of tie-breaking.
     ok, ng = len(trials), n_below - 1
     while abs(ok - ng) > 1:
-        mid = (low + high) // 2
+        mid = (ok + ng) // 2
         below_trials, _ = _split_trials(study, trials, mid, False)
         if sum(_is_trial_feasible(t, n_constraints) for t in below_trials) >= n_below:
             ok = mid
@@ -80,7 +80,6 @@ def _ctpe_gamma(
             ng = mid
 
     return ok
-
 
 
 def default_weights(x: int) -> np.ndarray:
@@ -517,7 +516,7 @@ class TPESampler(BaseSampler):
 
         # c-TPE also considers hard constraint.
         failed_trials = study._get_trials(
-            deepcopy=False, states=(TrialState.FAIL, ), use_cache=True
+            deepcopy=False, states=(TrialState.FAIL,), use_cache=True
         )
         mpes_below.append(self._build_mpe(study, search_space, trials, handle_below))
         mpes_above.append(self._build_mpe(study, search_space, failed_trials, handle_below))

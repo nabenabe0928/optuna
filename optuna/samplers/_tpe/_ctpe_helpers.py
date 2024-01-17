@@ -12,6 +12,7 @@ from optuna.trial import TrialState
 
 def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
     # TODO(nabenabe0928): Migrate this to `trial` or `study` once it is ready.
+    # TODO(nabenabe0928): Define the value of undefined constraints (None? or np.nan?).
     constraints = [t.system_attrs.get(_CONSTRAINTS_KEY) for t in trials]
     n_constraints = max([len(c) for c in constraints if c is not None], default=0)
     for t, c in zip(trials, constraints):
@@ -58,18 +59,21 @@ def _split_trials_and_get_quantiles_for_constraints(
     constraint_vals = np.array([constraints[i] for i in indices_for_constraints]).T
     # Find the n_below_min-th minimum value in each constraint.
     thresholds = np.partition(constraint_vals, kth=n_below_min - 1, axis=-1)[:, n_below_min - 1]
-    feasible_trials_list, infeasible_trials_list = [], []
+    n_trials_with_constraints = max(1, indices_for_constraints.size)
+    feasible_trials_list, infeasible_trials_list, quantiles = [], [], []
     for threshold, constraint_val in zip(thresholds, constraint_vals):
         # Include at least the indices up to the n_below_min-th min constraint value.
         feasible_indices = indices_for_constraints[constraint_val <= max(0, threshold)]
         infeasible_indices = np.setdiff1d(indices, feasible_indices)
+        if infeasible_indices.size == 0:
+            # Skip constraints with all feasible, because it does not affect acq_func.
+            continue
+
         feasible_trials_list.append([trials[idx] for idx in feasible_indices])
         infeasible_trials_list.append([trials[idx] for idx in infeasible_indices])
+        quantiles.append(np.sum(constraint_val <= 0) / n_trials_with_constraints)
 
-    n_trials_with_constraints = max(1, indices_for_constraints.size)
-    n_feasibles = np.sum(constraint_vals <= thresholds[:, np.newaxis], axis=1)
-    quantiles = n_feasibles / n_trials_with_constraints
-    return feasible_trials_list, infeasible_trials_list, quantiles.tolist()
+    return feasible_trials_list, infeasible_trials_list, quantiles
 
 
 def _sample(
