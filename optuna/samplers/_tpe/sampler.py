@@ -56,15 +56,31 @@ def _ctpe_gamma(
     gamma: Callable[[int], int],
     n_constraints: int,
 ) -> int:
-    if n_constraints == 0:
-        return gamma(x)
-
-    sorted_trials, _ = _split_trials(study, trials, len(trials), False, order_by_value=True)
-    feasible_masks = [_is_trial_feasible(t, n_constraints) for t in sorted_trials]
     n_below = gamma(x)
-    # sorted_trials[n_below_modified] is the top gamma-th feasible trial.
-    n_below_modified = int(np.searchsorted(np.cumsum(feasible_masks), n_below, side="left")) + 1
-    return min(n_below_modified, len(trials))
+    if n_constraints == 0:
+        return n_below
+
+    # TODO(nabenabe0928): Handle the case when some constraints exist in failed trials.
+    if len(study.directions) == 1:
+        sorted_trials, _ = _split_trials(study, trials, len(trials), False, order_by_value=True)
+        feas_masks = [_is_trial_feasible(t, n_constraints) for t in sorted_trials]
+        # sorted_trials[n_below_modified] is the top gamma-th feasible trial.
+        n_below_modified = int(np.searchsorted(np.cumsum(feas_masks), n_below, side="left")) + 1
+        return min(n_below_modified, len(trials))
+
+    # For non single-objective cases, _split_trials does not ensure the same order
+    # because of tie-breaking.
+    ok, ng = len(trials), n_below - 1
+    while abs(ok - ng) > 1:
+        mid = (low + high) // 2
+        below_trials, _ = _split_trials(study, trials, mid, False)
+        if sum(_is_trial_feasible(t, n_constraints) for t in below_trials) >= n_below:
+            ok = mid
+        else:
+            ng = mid
+
+    return ok
+
 
 
 def default_weights(x: int) -> np.ndarray:
@@ -490,6 +506,7 @@ class TPESampler(BaseSampler):
         n_constraints: int,
     ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
         mpes_below, mpes_above = [], []
+        # TODO(nabenabe0928): Handle the case when some constraints exist in failed trials.
         feas_trials_list, infeas_trials_list, qs = _split_trials_and_get_quantiles_for_constraints(
             trials=trials, n_below_min=n_below_min, n_constraints=n_constraints
         )
@@ -498,6 +515,13 @@ class TPESampler(BaseSampler):
             mpes_below.append(self._build_mpe(study, search_space, feas_trials, handle_below))
             mpes_above.append(self._build_mpe(study, search_space, infeas_trials, handle_below))
 
+        # c-TPE also considers hard constraint.
+        failed_trials = study._get_trials(
+            deepcopy=False, states=(TrialState.FAIL, ), use_cache=True
+        )
+        mpes_below.append(self._build_mpe(study, search_space, trials, handle_below))
+        mpes_above.append(self._build_mpe(study, search_space, failed_trials, handle_below))
+        qs.append(len(trials) / max(1, len(trials) + len(failed_trials)))
         return mpes_below, mpes_above, qs
 
     def _sample(
@@ -587,6 +611,7 @@ class TPESampler(BaseSampler):
         # See: c-TPE: Tree-structured Parzen Estimator with Inequality Constraints for
         # Expensive Hyperparameter Optimization (https://arxiv.org/abs/2211.14411)
         # NOTE: If no constraint exists, acq_func_vals falls back to the original TPE version.
+        # TODO(nabenabe0928): Check the reproducibility.
         _quantiles = np.asarray(quantiles)[:, np.newaxis]
         log_first_term = np.log(_quantiles + EPS)
         log_second_term = (
@@ -796,7 +821,6 @@ def _split_complete_trials_multi_objective(
         selected_indices = _solve_hssp(rank_i_lvals, rank_i_indices, subset_size, reference_point)
         indices_below[last_idx:] = selected_indices
 
-    # NOTE: At least, `below_trials` must be sorted for c-TPE.
     indices_above = np.setdiff1d(np.arange(len(trials)), indices_below)
     below_trials = [trials[i] for i in indices_below]
     above_trials = [trials[i] for i in indices_above]

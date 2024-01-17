@@ -7,6 +7,7 @@ import numpy as np
 from optuna.samplers._base import _CONSTRAINTS_KEY
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
 from optuna.trial import FrozenTrial
+from optuna.trial import TrialState
 
 
 def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
@@ -31,8 +32,11 @@ def _is_trial_feasible(trial: FrozenTrial, n_constraints: int) -> bool:
     if n_constraints == 0:
         return True
 
+    is_hard_constraint_satisfied = trial.state != TrialState.FAIL
     # If `_CONSTRAINTS_KEY` does not exist in a `trial`, consider it as infeasible.
-    return all(c <= 0 for c in trial.system_attrs.get(_CONSTRAINTS_KEY, [1.0]))
+    return is_hard_constraint_satisfied and all(
+        c <= 0 for c in trial.system_attrs.get(_CONSTRAINTS_KEY, [1.0])
+    )
 
 
 def _split_trials_and_get_quantiles_for_constraints(
@@ -44,6 +48,9 @@ def _split_trials_and_get_quantiles_for_constraints(
         warnings.warn("No trials with constraint values were found.")
         return [], [], []
 
+    # TODO(nabenabe0928): Define the case when some constraints are nan.
+    # The case above happens once we consider constraints for failed trials.
+    # For now, the case above does not happen.
     indices = np.arange(len(trials))
     constraints = [t.system_attrs.get(_CONSTRAINTS_KEY) for t in trials]
     indices_for_constraints = np.array([i for i, c in enumerate(constraints) if c is not None])
@@ -53,7 +60,6 @@ def _split_trials_and_get_quantiles_for_constraints(
     thresholds = np.partition(constraint_vals, kth=n_below_min - 1, axis=-1)[:, n_below_min - 1]
     feasible_trials_list, infeasible_trials_list = [], []
     for threshold, constraint_val in zip(thresholds, constraint_vals):
-        # TODO(nabenabe0928): Adapt to boolean case (cannot expand for boolean case).
         # Include at least the indices up to the n_below_min-th min constraint value.
         feasible_indices = indices_for_constraints[constraint_val <= max(0, threshold)]
         infeasible_indices = np.setdiff1d(indices, feasible_indices)
@@ -77,6 +83,8 @@ def _sample(
             "len(sample_ratio) must be identical to n_constraints+1, "
             f"but got len(sample_ratio)={len(sample_ratio)}."
         )
+    if len(mpes) == 1:
+        return mpes[0].sample(rng=rng, size=size)
 
     ratios = [r / denom for r in sample_ratio]
     sample_sizes = [int(np.ceil(ratio * size)) if ratio > 0 else 0 for ratio in ratios]
