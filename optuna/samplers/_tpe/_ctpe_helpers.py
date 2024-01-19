@@ -10,6 +10,9 @@ from optuna.trial import FrozenTrial
 from optuna.trial import TrialState
 
 
+EPS = 1e-12
+
+
 def _infer_n_constraints(trials: list[FrozenTrial]) -> int:
     # TODO(nabenabe0928): Migrate this to `trial` or `study` once it is ready.
     # TODO(nabenabe0928): Define the value of undefined constraints (None? or np.nan?).
@@ -88,6 +91,8 @@ def _compute_ctpe_acquisition_func(
     # NOTE: Mathematically speaking, the original TPE can also use this acquisition function.
     # NOTE: When removing experimental, we can use the relative density ratio below.
     # TODO(nabenabe0928): Check the reproducibility.
+    log_likelihoods_below = np.asarray([mpe.log_pdf(samples) for mpe in mpes_below])
+    log_likelihoods_above = np.asarray([mpe.log_pdf(samples) for mpe in mpes_above])
     _quantiles = np.asarray(quantiles)[:, np.newaxis]
     log_first_term = np.log(_quantiles + EPS)
     log_second_term = (

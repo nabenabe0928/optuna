@@ -518,7 +518,11 @@ class TPESampler(BaseSampler):
     ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
         mpes_below, mpes_above = [], []
         # TODO(nabenabe0928): Handle the case when some constraints exist in failed trials.
-        feas_trials_list, infeas_trials_list, qs = _split_trials_and_get_quantiles_for_constraints(
+        (
+            feas_trials_list,
+            infeas_trials_list,
+            quantiles,
+        ) = _split_trials_and_get_quantiles_for_constraints(
             trials=trials, n_below_min=n_below_min, n_constraints=n_constraints
         )
         handle_below = False  # below is for objective, but not for feasible.
@@ -532,8 +536,8 @@ class TPESampler(BaseSampler):
         )
         mpes_below.append(self._build_mpe(study, search_space, trials, handle_below))
         mpes_above.append(self._build_mpe(study, search_space, failed_trials, handle_below))
-        qs.append(len(trials) / max(1, len(trials) + len(failed_trials)))
-        return mpes_below, mpes_above, qs
+        quantiles.append(len(trials) / max(1, len(trials) + len(failed_trials)))
+        return mpes_below, mpes_above, quantiles
 
     def _sample(
         self, study: Study, trial: FrozenTrial, search_space: Dict[str, BaseDistribution]
