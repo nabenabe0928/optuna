@@ -509,34 +509,38 @@ class TPESampler(BaseSampler):
         return {k: np.asarray(v) for k, v in values.items()}
 
     def _get_mpes_and_quantiles_for_ctpe(
-        self,
-        study: Study,
-        trials: list[FrozenTrial],
-        search_space: dict[str, BaseDistribution],
-        n_below_min: int,
-        n_constraints: int,
+        self, study: Study, trials: list[FrozenTrial], search_space: dict[str, BaseDistribution]
     ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
-        mpes_below, mpes_above = [], []
+        n_constraints = _infer_n_constraints(trials)
+        n = sum(trial.state != TrialState.RUNNING for trial in trials)  # Ignore running trials.
+        n_below = _ctpe_gamma(n, study, trials, self._gamma, n_constraints)
+        constraints_enabled = False  # Need to ignore the native constraint feature.
+
+        below_trials, above_trials = _split_trials(study, trials, n_below, constraints_enabled)
+        mpes_below = [self._build_mpe(study, search_space, below_trials, handle_below=True)]
+        mpes_above = [self._build_mpe(study, search_space, above_trials, handle_below=False)]
+        quantiles = [len(below_trials) / max(1, len(below_trials) + len(above_trials))]
+
+        handle_below = False  # below is for objective, but not for feasible.
+        # c-TPE also considers hard constraint.
+        failed_state = (TrialState.FAIL,)
+        failed_trials = study._get_trials(deepcopy=False, states=failed_state, use_cache=True)
+        mpes_below.append(self._build_mpe(study, search_space, trials, handle_below))
+        mpes_above.append(self._build_mpe(study, search_space, failed_trials, handle_below))
+        quantiles.append(len(trials) / max(1, len(trials) + len(failed_trials)))
+
         # TODO(nabenabe0928): Handle the case when some constraints exist in failed trials.
         (
             feas_trials_list,
             infeas_trials_list,
-            quantiles,
-        ) = _split_trials_and_get_quantiles_for_constraints(
-            trials=trials, n_below_min=n_below_min, n_constraints=n_constraints
-        )
-        handle_below = False  # below is for objective, but not for feasible.
+            feas_quantiles,
+        ) = _split_trials_and_get_quantiles_for_constraints(trials, self._gamma(n), n_constraints)
         for feas_trials, infeas_trials in zip(feas_trials_list, infeas_trials_list):
             mpes_below.append(self._build_mpe(study, search_space, feas_trials, handle_below))
             mpes_above.append(self._build_mpe(study, search_space, infeas_trials, handle_below))
 
-        # c-TPE also considers hard constraint.
-        failed_trials = study._get_trials(
-            deepcopy=False, states=(TrialState.FAIL,), use_cache=True
-        )
-        mpes_below.append(self._build_mpe(study, search_space, trials, handle_below))
-        mpes_above.append(self._build_mpe(study, search_space, failed_trials, handle_below))
-        quantiles.append(len(trials) / max(1, len(trials) + len(failed_trials)))
+        quantiles.extend(feas_quantiles)
+
         return mpes_below, mpes_above, quantiles
 
     def _sample(
@@ -548,28 +552,23 @@ class TPESampler(BaseSampler):
             states = [TrialState.COMPLETE, TrialState.PRUNED]
         use_cache = not self._constant_liar
         trials = study._get_trials(deepcopy=False, states=states, use_cache=use_cache)
-        n_constraints = _infer_n_constraints(trials) if self._constraints_func is not None else 0
 
         # We divide data into below and above.
         n = sum(trial.state != TrialState.RUNNING for trial in trials)  # Ignore running trials.
-        n_below = self._gamma(n)
-        below_trials, above_trials = _split_trials(
-            study,
-            trials,
-            _ctpe_gamma(n, study, trials, self._gamma, n_constraints) if self._ctpe else n_below,
-            self._constraints_func is not None and not self._ctpe,
-        )
-
-        mpes_below = [self._build_mpe(study, search_space, below_trials, handle_below=True)]
-        mpes_above = [self._build_mpe(study, search_space, above_trials, handle_below=False)]
-        quantiles = [len(below_trials) / max(1, len(below_trials) + len(above_trials))]
         if self._ctpe:
-            _mpes_below, _mpes_above, _quantiles = self._get_mpes_and_quantiles_for_ctpe(
-                study, trials, search_space, n_below_min=n_below, n_constraints=n_constraints
+            mpes_below, mpes_above, quantiles = self._get_mpes_and_quantiles_for_ctpe(
+                study=study, trials=trials, search_space=search_space
             )
-            mpes_below.extend(_mpes_below)
-            mpes_above.extend(_mpes_above)
-            quantiles.extend(_quantiles)
+        else:
+            below_trials, above_trials = _split_trials(
+                study,
+                trials,
+                self._gamma(n),
+                self._constraints_func is not None,
+            )
+            mpes_below = [self._build_mpe(study, search_space, below_trials, handle_below=True)]
+            mpes_above = [self._build_mpe(study, search_space, above_trials, handle_below=False)]
+            quantiles = [1.0]  # Any positive number.
 
         sample_ratio = [max(EPS, 1.0 - q) for q in quantiles]
         samples_below = _sample(mpes_below, self._rng.rng, self._n_ei_candidates, sample_ratio)
