@@ -513,9 +513,9 @@ class TPESampler(BaseSampler):
     ) -> tuple[list[_ParzenEstimator], list[_ParzenEstimator], list[float]]:
         n_constraints = _infer_n_constraints(trials)
         n = sum(trial.state != TrialState.RUNNING for trial in trials)  # Ignore running trials.
+
         n_below = _ctpe_gamma(n, study, trials, self._gamma, n_constraints)
         constraints_enabled = False  # Need to ignore the native constraint feature.
-
         below_trials, above_trials = _split_trials(study, trials, n_below, constraints_enabled)
         mpes_below = [self._build_mpe(study, search_space, below_trials, handle_below=True)]
         mpes_above = [self._build_mpe(study, search_space, above_trials, handle_below=False)]
@@ -535,11 +535,10 @@ class TPESampler(BaseSampler):
             infeas_trials_list,
             feas_quantiles,
         ) = _split_trials_and_get_quantiles_for_constraints(trials, self._gamma(n), n_constraints)
+        quantiles.extend(feas_quantiles)
         for feas_trials, infeas_trials in zip(feas_trials_list, infeas_trials_list):
             mpes_below.append(self._build_mpe(study, search_space, feas_trials, handle_below))
             mpes_above.append(self._build_mpe(study, search_space, infeas_trials, handle_below))
-
-        quantiles.extend(feas_quantiles)
 
         return mpes_below, mpes_above, quantiles
 
@@ -596,8 +595,10 @@ class TPESampler(BaseSampler):
                 param_mask_below.append(
                     all((param_name in trial.params) for param_name in search_space)
                 )
+            # Need to ignore the native constraint feature.
+            constraints_func = self._constraints_func if not self._ctpe else None
             weights_below = _calculate_weights_below_for_multi_objective(
-                study, trials, self._constraints_func if not self._ctpe else None
+                study, trials, constraints_func
             )[param_mask_below]
             mpe = _ParzenEstimator(
                 observations, search_space, self._parzen_estimator_parameters, weights_below
