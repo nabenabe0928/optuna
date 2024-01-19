@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Container
 import math
 from typing import Any
 from typing import Callable
@@ -351,7 +352,7 @@ class TPESampler(BaseSampler):
         self._search_space = IntersectionSearchSpace(include_pruned=True)
         self._constant_liar = constant_liar
         self._constraints_func = constraints_func
-        self._ctpe = ctpe and constraints_func is not None
+        self._ctpe = ctpe
 
         if multivariate:
             warnings.warn(
@@ -446,7 +447,12 @@ class TPESampler(BaseSampler):
         if search_space == {}:
             return {}
 
-        states = (TrialState.COMPLETE, TrialState.PRUNED)
+        states: Container[TrialState]
+        if self._ctpe:
+            states = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)
+        else:
+            states = (TrialState.COMPLETE, TrialState.PRUNED)
+
         trials = study._get_trials(deepcopy=False, states=states, use_cache=True)
         # If the number of samples is insufficient, we run random trial.
         if len(trials) < self._n_startup_trials:
@@ -461,7 +467,12 @@ class TPESampler(BaseSampler):
         param_name: str,
         param_distribution: BaseDistribution,
     ) -> Any:
-        states = (TrialState.COMPLETE, TrialState.PRUNED)
+        states: Container[TrialState]
+        if self._ctpe:
+            states = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)
+        else:
+            states = (TrialState.COMPLETE, TrialState.PRUNED)
+
         trials = study._get_trials(deepcopy=False, states=states, use_cache=True)
 
         # If the number of samples is insufficient, we run random trial.
