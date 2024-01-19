@@ -76,6 +76,27 @@ def _split_trials_and_get_quantiles_for_constraints(
     return feasible_trials_list, infeasible_trials_list, quantiles
 
 
+def _compute_ctpe_acquisition_func(
+    samples: dict[str, np.ndarray],
+    mpes_below: list[_ParzenEstimator],
+    mpes_above: list[_ParzenEstimator],
+    quantiles: list[float],
+) -> np.ndarray:
+    # See: c-TPE: Tree-structured Parzen Estimator with Inequality Constraints for
+    # Expensive Hyperparameter Optimization (https://arxiv.org/abs/2211.14411)
+    # NOTE: If no constraint exists, acq_func_vals falls back to the original TPE version.
+    # NOTE: Mathematically speaking, the original TPE can also use this acquisition function.
+    # NOTE: When removing experimental, we can use the relative density ratio below.
+    # TODO(nabenabe0928): Check the reproducibility.
+    _quantiles = np.asarray(quantiles)[:, np.newaxis]
+    log_first_term = np.log(_quantiles + EPS)
+    log_second_term = (
+        np.log(1.0 - _quantiles + EPS) + log_likelihoods_above - log_likelihoods_below
+    )
+    acq_func_vals = np.sum(-np.logaddexp(log_first_term, log_second_term), axis=0)
+    return acq_func_vals
+
+
 def _sample(
     mpes: list[_ParzenEstimator], rng: np.random.RandomState, size: int, sample_ratio: list[float]
 ) -> dict[str, np.ndarray]:

@@ -23,6 +23,7 @@ from optuna.samplers._base import _process_constraints_after_trial
 from optuna.samplers._base import BaseSampler
 from optuna.samplers._lazy_random_state import LazyRandomState
 from optuna.samplers._random import RandomSampler
+from optuna.samplers._tpe._ctpe_helpers import _compute_ctpe_acquisition_func
 from optuna.samplers._tpe._ctpe_helpers import _infer_n_constraints
 from optuna.samplers._tpe._ctpe_helpers import _is_trial_feasible
 from optuna.samplers._tpe._ctpe_helpers import _sample
@@ -70,7 +71,7 @@ def _ctpe_gamma(
         return min(n_below_modified, len(trials))
 
     # For non single-objective cases, _split_trials does not ensure the same order
-    # because of tie-breaking.
+    # because of tie-breaking, so we use binary search.
     ok, ng = len(trials), n_below - 1
     while abs(ok - ng) > 1:
         mid = (ok + ng) // 2
@@ -610,24 +611,18 @@ class TPESampler(BaseSampler):
         mpes_above: list[_ParzenEstimator],
         quantiles: list[float],
     ) -> np.ndarray:
-        log_likelihoods_below = np.asarray([mpe.log_pdf(samples) for mpe in mpes_below])
-        log_likelihoods_above = np.asarray([mpe.log_pdf(samples) for mpe in mpes_above])
-        if not self._ctpe and (len(log_likelihoods_below) != 1 or len(log_likelihoods_above) != 1):
+        if not self._ctpe and (len(mpes_below) != 1 or len(mpes_above) != 1):
             raise ValueError(
                 "The number of Parzen estimators for below and above in non c-TPE cases "
                 f"must be one, but got len(mpe_below)={len(mpes_below)} and "
                 f"len(mpe_above)={len(mpes_above)}."
             )
-        # See: c-TPE: Tree-structured Parzen Estimator with Inequality Constraints for
-        # Expensive Hyperparameter Optimization (https://arxiv.org/abs/2211.14411)
-        # NOTE: If no constraint exists, acq_func_vals falls back to the original TPE version.
-        # TODO(nabenabe0928): Check the reproducibility.
-        _quantiles = np.asarray(quantiles)[:, np.newaxis]
-        log_first_term = np.log(_quantiles + EPS)
-        log_second_term = (
-            np.log(1.0 - _quantiles + EPS) + log_likelihoods_above - log_likelihoods_below
-        )
-        acq_func_vals = np.sum(-np.logaddexp(log_first_term, log_second_term), axis=0)
+        if self._ctpe:
+            return _compute_ctpe_acquisition_func(samples, mpes_below, mpes_above, quantiles)
+
+        log_likelihoods_below = mpes_below[0].log_pdf(samples)
+        log_likelihoods_above = mpes_above[0].log_pdf(samples)
+        acq_func_vals = log_likelihoods_below - log_likelihoods_above
         return acq_func_vals
 
     @classmethod
