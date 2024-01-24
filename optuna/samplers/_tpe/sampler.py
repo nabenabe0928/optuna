@@ -58,6 +58,11 @@ def _ctpe_gamma(
     gamma: Callable[[int], int],
     n_constraints: int,
 ) -> int:
+    if any(t.state == TrialState.FAIL for t in trials):
+        # TODO(nabenabe0928): Remove it after introducing the handling for the case
+        # when some constraints exist in failed trials.
+        raise ValueError("No fail trials should be included to calculate gamma for c-TPE.")
+
     n_below = gamma(x)
     if n_constraints == 0:
         return n_below
