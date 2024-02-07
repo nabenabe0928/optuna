@@ -80,8 +80,6 @@ jobs:
   tests-integration-windows:
     runs-on: windows-latest
 
-    # Not intended for forks.
-    if: (github.event_name == 'schedule' && github.repository == 'optuna/optuna') || (github.event_name != 'schedule')
     steps:
     - name: Checkout
       uses: actions/checkout@v3
@@ -120,7 +118,8 @@ jobs:
         pip install "distributed<2023.3.2"
 
         # TODO(nabenabe0928): Remove the version constraint on Torch.
-        pip install "torch<2.2.0"
+        # pip install "torch<2.2.0"
+        pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
         pip install "torchaudio<2.2.0"
         pip install "torchvision<0.17.0"
 
