@@ -59,7 +59,8 @@ jobs:
 
         # TODO(nabenabe0928): Remove the version constraint on Torch.
         # pip install "torch<2.2.0"
-        pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
+        pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cpu
+        pip install lightning
 
     - name: Output installed packages
       run: |
