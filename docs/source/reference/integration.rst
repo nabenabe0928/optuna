@@ -39,25 +39,6 @@ MLflow
 
    optuna.integration.MLflowCallback
 
-Weights & Biases
-----------------
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-
-   optuna.integration.WeightsAndBiasesCallback
-
-pycma
------
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-
-   optuna.integration.PyCmaSampler
-   optuna.integration.CmaEsSampler
-
 PyTorch
 -------
 
@@ -68,24 +49,6 @@ PyTorch
    optuna.integration.PyTorchIgnitePruningHandler
    optuna.integration.PyTorchLightningPruningCallback
    optuna.integration.TorchDistributedTrial
-
-scikit-optimize
----------------
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-
-   optuna.integration.SkoptSampler
-
-XGBoost
--------
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-
-   optuna.integration.XGBoostPruningCallback
 
 Dependencies of each integration
 --------------------------------
