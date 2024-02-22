@@ -56,6 +56,7 @@ checking = [
     "isort",
     "mypy",
     "mypy_boto3_s3",
+    "torch",
     "types-PyYAML",
     "types-redis",
     "types-setuptools",
