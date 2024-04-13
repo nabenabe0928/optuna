@@ -58,7 +58,9 @@ class BaseAcquisitionFunc(metaclass=ABCMeta):
         self._kernel_params = kernel_params
         self._is_categorical = torch.from_numpy(search_space.scale_types == ScaleType.CATEGORICAL)
         with torch.no_grad():
-            cov_Y_Y = kernel(self._is_categorical, kernel_params, self._X, self._X).detach().numpy()
+            cov_Y_Y = (
+                kernel(self._is_categorical, kernel_params, self._X, self._X).detach().numpy()
+            )
             cov_Y_Y[np.diag_indices(X.shape[0])] += kernel_params.noise_var.item()
 
         cov_Y_Y_inv = np.linalg.inv(cov_Y_Y)

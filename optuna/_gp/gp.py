@@ -1,3 +1,21 @@
+"""Variable Definitions in Gaussian Process Regressor.
+
+* X: The normalized observed parameter values. The shape is (len(trials), len(params)).
+* Y: The standardized observed objective values. The shape is (len(trials), ).
+     Note that Y is modified so that larger Y is better.
+* x: The parameter values to be evaluated. Possibly batched.
+     The shape is (len(params), ) or (batch_size, len(params)).
+* cov_fX_fX: The kernel matrix V[f(X)] of X. The shape is (len(trials), len(trials)).
+* cov_fx_fX: The kernel vector Cov[f(x), f(X)] of x and X.
+             The shape is (len(trials), ) or (batch_size, len(trials)).
+* cov_fx_fx: The kernel value of x = V[f(x)]. Since we use a Matern 5/2 kernel,
+             we assume this value to be a constant.
+* cov_Y_Y_inv: The inverse of the covariance matrix of Y = (V[f(X) + noise])^-1.
+               The shape is (len(trials), len(trials)).
+* cov_Y_Y_inv_Y: cov_Y_Y_inv @ Y. The shape is (len(trials), ).
+* d2: The squared distance between two points.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,19 +39,6 @@ else:
     torch = _LazyImport("torch")
 
 logger = get_logger(__name__)
-
-# This GP implementation uses the following notation:
-# X[len(trials), len(params)]: observed parameter values.
-# Y[len(trials)]: observed objective values.
-# x[(batch_len,) len(params)]: parameter value to evaluate. Possibly batched.
-# cov_fX_fX[len(trials), len(trials)]: kernel matrix of X = V[f(X)]
-# cov_fx_fX[(batch_len,) len(trials)]: kernel matrix of x and X = Cov[f(x), f(X)]
-# cov_fx_fx: kernel value (scalar) of x = V[f(x)].
-#     Since we use a Matern 5/2 kernel, we assume this value to be a constant.
-# cov_Y_Y_inv[len(trials), len(trials)]: inv of the covariance matrix of Y = (V[f(X) + noise])^-1
-# cov_Y_Y_inv_Y[len(trials)]: cov_Y_Y_inv @ Y
-# max_Y: maximum of Y (Note that we transform the objective values such that it is maximized.)
-# d2: squared distance between two points
 
 
 class Matern52Kernel(torch.autograd.Function):
