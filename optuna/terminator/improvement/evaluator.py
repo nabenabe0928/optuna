@@ -113,7 +113,7 @@ class RegretBoundEvaluator(BaseImprovementEvaluator):
 
     def _compute_standardized_regret_bound(
         self,
-        kernel_params: gp.KernelParamsTensor,
+        kernel: gp.Matern52Kernel,
         gp_search_space: search_space.SearchSpace,
         normalized_top_n_params: np.ndarray,
         standarized_top_n_values: np.ndarray,
@@ -131,7 +131,7 @@ class RegretBoundEvaluator(BaseImprovementEvaluator):
         # calculate max_ucb
         beta = _get_beta(n_params, n_trials)
         ucb_acqf = acqf.UCB(
-            kernel_params=kernel_params,
+            kernel=kernel,
             search_space=gp_search_space,
             X=normalized_top_n_params,
             Y=standarized_top_n_values,
@@ -147,7 +147,7 @@ class RegretBoundEvaluator(BaseImprovementEvaluator):
 
         # calculate min_lcb
         lcb_acqf = acqf.LCB(
-            kernel_params=kernel_params,
+            kernel=kernel,
             search_space=gp_search_space,
             X=normalized_top_n_params,
             Y=standarized_top_n_values,
@@ -189,7 +189,7 @@ class RegretBoundEvaluator(BaseImprovementEvaluator):
             # TODO(contramundum53): Add option to specify this.
             deterministic_objective=False,
             # TODO(y0z): Add `kernel_params_cache` to speedup.
-            initial_kernel_params=None,
+            initial_kernel=None,
         )
 
         standardized_regret_bound = self._compute_standardized_regret_bound(

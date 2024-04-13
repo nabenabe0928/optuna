@@ -8,7 +8,7 @@ from optuna._gp.acqf import BaseAcquisitionFunc
 from optuna._gp.acqf import LCB
 from optuna._gp.acqf import LogEI
 from optuna._gp.acqf import UCB
-from optuna._gp.gp import KernelParamsTensor
+from optuna._gp.gp import Matern52Kernel
 from optuna._gp.search_space import ScaleType
 from optuna._gp.search_space import SearchSpace
 
@@ -21,10 +21,11 @@ def test_eval_acqf(acqf_cls: type[BaseAcquisitionFunc], x: np.ndarray) -> None:
     n_dims = 2
     X = np.array([[0.1, 0.2], [0.2, 0.3], [0.3, 0.1]])
     Y = np.array([1.0, 2.0, 3.0])
-    kernel_params = KernelParamsTensor(
+    kernel = Matern52Kernel(
         inverse_squared_lengthscales=torch.tensor([2.0, 3.0], dtype=torch.float64),
-        kernel_scale=torch.tensor(4.0, dtype=torch.float64),
+        scale=torch.tensor(4.0, dtype=torch.float64),
         noise_var=torch.tensor(0.1, dtype=torch.float64),
+        is_categorical=np.array([False] * 2),
     )
     search_space = SearchSpace(
         scale_types=np.full(n_dims, ScaleType.LINEAR),
@@ -33,7 +34,7 @@ def test_eval_acqf(acqf_cls: type[BaseAcquisitionFunc], x: np.ndarray) -> None:
     )
 
     kwargs = dict(stabilizing_noise=0.0) if acqf_cls == LogEI else dict(beta=2.0)
-    acqf = acqf_cls(kernel_params=kernel_params, search_space=search_space, X=X, Y=Y, **kwargs)
+    acqf = acqf_cls(kernel=kernel, search_space=search_space, X=X, Y=Y, **kwargs)
 
     if x.ndim == 1:
         acqf_value, grad = acqf.eval_with_grad(x)

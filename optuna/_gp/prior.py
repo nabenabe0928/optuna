@@ -16,7 +16,7 @@ else:
 DEFAULT_MINIMUM_NOISE_VAR = 1e-6
 
 
-def default_log_prior(kernel_params: "gp.KernelParamsTensor") -> "torch.Tensor":
+def default_log_prior(kernel: "gp.Matern52Kernel") -> "torch.Tensor":
     # Log of prior distribution of kernel parameters.
 
     def gamma_log_prior(x: "torch.Tensor", concentration: float, rate: float) -> "torch.Tensor":
@@ -28,9 +28,8 @@ def default_log_prior(kernel_params: "gp.KernelParamsTensor") -> "torch.Tensor":
     # TODO(contramundum53): Check whether these priors are appropriate.
     return (
         -(
-            0.1 / kernel_params.inverse_squared_lengthscales
-            + 0.1 * kernel_params.inverse_squared_lengthscales
+            0.1 / kernel.inverse_squared_lengthscales + 0.1 * kernel.inverse_squared_lengthscales
         ).sum()
-        + gamma_log_prior(kernel_params.kernel_scale, 2, 1)
-        + gamma_log_prior(kernel_params.noise_var, 1.1, 30)
+        + gamma_log_prior(kernel.scale, 2, 1)
+        + gamma_log_prior(kernel.noise_var, 1.1, 30)
     )

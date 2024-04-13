@@ -89,12 +89,10 @@ class GPSampler(BaseSampler):
         self._independent_sampler = independent_sampler or optuna.samplers.RandomSampler(seed=seed)
         self._intersection_search_space = optuna.search_space.IntersectionSearchSpace()
         self._n_startup_trials = n_startup_trials
-        self._log_prior: "Callable[[gp.KernelParamsTensor], torch.Tensor]" = (
-            prior.default_log_prior
-        )
+        self._log_prior: "Callable[[gp.Matern52Kernel], torch.Tensor]" = prior.default_log_prior
         self._minimum_noise: float = prior.DEFAULT_MINIMUM_NOISE_VAR
         # We cache the kernel parameters for initial values of fitting the next time.
-        self._kernel_params_cache: "gp.KernelParamsTensor | None" = None
+        self._kernel_cache: "gp.Matern52Kernel | None" = None
         self._optimize_n_samples: int = 2048
         self._deterministic = deterministic_objective
 
@@ -167,13 +165,13 @@ class GPSampler(BaseSampler):
 
         standarized_score_vals = (score_vals - score_vals.mean()) / max(1e-10, score_vals.std())
 
-        if self._kernel_params_cache is not None and len(
-            self._kernel_params_cache.inverse_squared_lengthscales
+        if self._kernel_cache is not None and len(
+            self._kernel_cache.inverse_squared_lengthscales
         ) != len(internal_search_space.scale_types):
             # Clear cache if the search space changes.
-            self._kernel_params_cache = None
+            self._kernel_cache = None
 
-        kernel_params = gp.fit_kernel_params(
+        kernel = gp.fit_kernel_params(
             X=normalized_params,
             Y=standarized_score_vals,
             is_categorical=(
@@ -181,13 +179,13 @@ class GPSampler(BaseSampler):
             ),
             log_prior=self._log_prior,
             minimum_noise=self._minimum_noise,
-            initial_kernel_params=self._kernel_params_cache,
+            initial_kernel=self._kernel_cache,
             deterministic_objective=self._deterministic,
         )
-        self._kernel_params_cache = kernel_params
+        self._kernel_cache = kernel
 
         acqf_ = acqf.LogEI(
-            kernel_params=kernel_params,
+            kernel=kernel,
             search_space=internal_search_space,
             X=normalized_params,
             Y=standarized_score_vals,

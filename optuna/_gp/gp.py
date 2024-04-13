@@ -13,7 +13,6 @@
 * cov_Y_Y_inv: The inverse of the covariance matrix of Y = (V[f(X) + noise])^-1.
                The shape is (len(trials), len(trials)).
 * cov_Y_Y_inv_Y: cov_Y_Y_inv @ Y. The shape is (len(trials), ).
-* d2: The squared distance between two points.
 """
 
 from __future__ import annotations
@@ -41,7 +40,14 @@ else:
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
 class Matern52Kernel(torch.autograd.Function):
+    # Kernel parameters to fit.
+    inverse_squared_lengthscales: torch.Tensor  # (len(params), )
+    scale: torch.Tensor  # Scalar
+    noise_var: torch.Tensor  # Scalar
+    is_categorical: np.ndarray
+
     @staticmethod
     def forward(ctx: typing.Any, squared_distance: torch.Tensor) -> torch.Tensor:  # type: ignore
         sqrt5d = torch.sqrt(5 * squared_distance)
@@ -59,106 +65,52 @@ class Matern52Kernel(torch.autograd.Function):
         (deriv,) = ctx.saved_tensors
         return deriv * grad
 
+    def compute(self, X1: torch.Tensor, X2: torch.Tensor) -> torch.Tensor:
+        """
+        PyTorch cannot differentiate the expression below:
+            exp(sqrt5d) * (5/3 * squared_distance + sqrt(squared_distance) + 1),
+        because its gradient runs into 0/0 at squared_distance=0.
+        """
+        squared_diffs = (X1[..., :, None, :] - X2[..., None, :, :]) ** 2
+        # Use the Hamming distance for categorical parameters.
+        squared_diffs[..., self.is_categorical] = (
+            squared_diffs[..., self.is_categorical] > 0.0
+        ).type(torch.float64)
+        squared_distance = (squared_diffs * self.inverse_squared_lengthscales).sum(dim=-1)
+        return self.scale * self.apply(squared_distance)  # type: ignore
 
-def matern52_kernel_from_squared_distance(squared_distance: torch.Tensor) -> torch.Tensor:
-    # sqrt5d = sqrt(5 * squared_distance)
-    # exp(sqrt5d) * (1/3 * sqrt5d ** 2 + sqrt5d + 1)
-    #
-    # We cannot let PyTorch differentiate the above expression because
-    # the gradient runs into 0/0 at squared_distance=0.
-    return Matern52Kernel.apply(squared_distance)  # type: ignore
+    def marginal_log_likelihood(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:  # Scaler
+        # -0.5 * log((2pi)^n |C|) - 0.5 * Y^T C^-1 Y, where C^-1 = cov_Y_Y_inv
+        # We apply the cholesky decomposition to efficiently compute log(|C|) and C^-1.
 
-
-@dataclass(frozen=True)
-class KernelParamsTensor:
-    # Kernel parameters to fit.
-    inverse_squared_lengthscales: torch.Tensor  # [len(params)]
-    kernel_scale: torch.Tensor  # Scalar
-    noise_var: torch.Tensor  # Scalar
-
-
-def kernel(
-    is_categorical: torch.Tensor,  # [len(params)]
-    kernel_params: KernelParamsTensor,
-    X1: torch.Tensor,  # [...batch_shape, n_A, len(params)]
-    X2: torch.Tensor,  # [...batch_shape, n_B, len(params)]
-) -> torch.Tensor:  # [...batch_shape, n_A, n_B]
-    # kernel(x1, x2) = kernel_scale * matern52_kernel_from_squared_distance(
-    #                     d2(x1, x2) * inverse_squared_lengthscales)
-    # d2(x1, x2) = sum_i d2_i(x1_i, x2_i)
-    # d2_i(x1_i, x2_i) = (x1_i - x2_i) ** 2  # if x_i is continuous
-    # d2_i(x1_i, x2_i) = 1 if x1_i != x2_i else 0  # if x_i is categorical
-
-    d2 = (X1[..., :, None, :] - X2[..., None, :, :]) ** 2
-
-    # Use the Hamming distance for categorical parameters.
-    d2[..., is_categorical] = (d2[..., is_categorical] > 0.0).type(torch.float64)
-    d2 = (d2 * kernel_params.inverse_squared_lengthscales).sum(dim=-1)
-    return matern52_kernel_from_squared_distance(d2) * kernel_params.kernel_scale
-
-
-def kernel_at_zero_distance(
-    kernel_params: KernelParamsTensor,
-) -> torch.Tensor:  # [...batch_shape, n_A, n_B]
-    # kernel(x, x) = kernel_scale
-    return kernel_params.kernel_scale
-
-
-def posterior(
-    kernel_params: KernelParamsTensor,
-    X: torch.Tensor,  # [len(trials), len(params)]
-    is_categorical: torch.Tensor,  # bool[len(params)]
-    cov_Y_Y_inv: torch.Tensor,  # [len(trials), len(trials)]
-    cov_Y_Y_inv_Y: torch.Tensor,  # [len(trials)]
-    x: torch.Tensor,  # [(batch,) len(params)]
-) -> tuple[torch.Tensor, torch.Tensor]:  # (mean: [(batch,)], var: [(batch,)])
-    cov_fx_fX = kernel(is_categorical, kernel_params, x[..., None, :], X)[..., 0, :]
-    cov_fx_fx = kernel_at_zero_distance(kernel_params)
-
-    # mean = cov_fx_fX @ inv(cov_fX_fX + noise * I) @ Y
-    # var = cov_fx_fx - cov_fx_fX @ inv(cov_fX_fX + noise * I) @ cov_fx_fX.T
-    mean = cov_fx_fX @ cov_Y_Y_inv_Y  # [batch]
-    var = cov_fx_fx - (cov_fx_fX * (cov_fx_fX @ cov_Y_Y_inv)).sum(dim=-1)  # [batch]
-    # We need to clamp the variance to avoid negative values due to numerical errors.
-    return (mean, torch.clamp(var, min=0.0))
-
-
-def marginal_log_likelihood(
-    X: torch.Tensor,  # [len(trials), len(params)]
-    Y: torch.Tensor,  # [len(trials)]
-    is_categorical: torch.Tensor,  # [len(params)]
-    kernel_params: KernelParamsTensor,
-) -> torch.Tensor:  # Scalar
-    # -0.5 * log((2pi)^n |C|) - 0.5 * Y^T C^-1 Y, where C^-1 = cov_Y_Y_inv
-    # We apply the cholesky decomposition to efficiently compute log(|C|) and C^-1.
-
-    cov_fX_fX = kernel(is_categorical, kernel_params, X, X)
-
-    cov_Y_Y_chol = torch.linalg.cholesky(
-        cov_fX_fX + kernel_params.noise_var * torch.eye(X.shape[0], dtype=torch.float64)
-    )
-    # log |L| = 0.5 * log|L^T L| = 0.5 * log|C|
-    logdet = 2 * torch.log(torch.diag(cov_Y_Y_chol)).sum()
-    # cov_Y_Y_chol @ cov_Y_Y_chol_inv_Y = Y --> cov_Y_Y_chol_inv_Y = inv(cov_Y_Y_chol) @ Y
-    cov_Y_Y_chol_inv_Y = torch.linalg.solve_triangular(cov_Y_Y_chol, Y[:, None], upper=False)[:, 0]
-    return -0.5 * (
-        logdet
-        + X.shape[0] * math.log(2 * math.pi)
-        # Y^T C^-1 Y = Y^T inv(L^T L) Y --> cov_Y_Y_chol_inv_Y @ cov_Y_Y_chol_inv_Y
-        + (cov_Y_Y_chol_inv_Y @ cov_Y_Y_chol_inv_Y)
-    )
+        cov_fX_fX = self.compute(X, X)
+        cov_Y_Y_chol = torch.linalg.cholesky(
+            cov_fX_fX + self.noise_var * torch.eye(X.shape[0], dtype=torch.float64)
+        )
+        # log |L| = 0.5 * log|L^T L| = 0.5 * log|C|
+        logdet = 2 * torch.log(torch.diag(cov_Y_Y_chol)).sum()
+        # cov_Y_Y_chol @ cov_Y_Y_chol_inv_Y = Y --> cov_Y_Y_chol_inv_Y = inv(cov_Y_Y_chol) @ Y
+        cov_Y_Y_chol_inv_Y = torch.linalg.solve_triangular(cov_Y_Y_chol, Y[:, None], upper=False)[
+            :, 0
+        ]
+        return -0.5 * (
+            logdet
+            + X.shape[0] * math.log(2 * math.pi)
+            # Y^T C^-1 Y = Y^T inv(L^T L) Y --> cov_Y_Y_chol_inv_Y @ cov_Y_Y_chol_inv_Y
+            + (cov_Y_Y_chol_inv_Y @ cov_Y_Y_chol_inv_Y)
+        )
 
 
 def _fit_kernel_params(
     X: np.ndarray,  # [len(trials), len(params)]
     Y: np.ndarray,  # [len(trials)]
     is_categorical: np.ndarray,  # [len(params)]
-    log_prior: Callable[[KernelParamsTensor], torch.Tensor],
+    log_prior: Callable[[Matern52Kernel], torch.Tensor],
     minimum_noise: float,
     deterministic_objective: bool,
-    initial_kernel_params: KernelParamsTensor,
+    initial_kernel: Matern52Kernel,
     gtol: float,
-) -> KernelParamsTensor:
+) -> Matern52Kernel:
     n_params = X.shape[1]
 
     # We apply log transform to enforce the positivity of the kernel parameters.
@@ -168,11 +120,11 @@ def _fit_kernel_params(
     # pathological behavior of maximum likelihood estimation.
     initial_raw_params = np.concatenate(
         [
-            np.log(initial_kernel_params.inverse_squared_lengthscales.detach().numpy()),
+            np.log(initial_kernel.inverse_squared_lengthscales.detach().numpy()),
             [
-                np.log(initial_kernel_params.kernel_scale.item()),
+                np.log(initial_kernel.scale.item()),
                 # We add 0.01 * minimum_noise to initial noise_var to avoid instability.
-                np.log(initial_kernel_params.noise_var.item() - 0.99 * minimum_noise),
+                np.log(initial_kernel.noise_var.item() - 0.99 * minimum_noise),
             ],
         ]
     )
@@ -180,18 +132,19 @@ def _fit_kernel_params(
     def loss_func(raw_params: np.ndarray) -> tuple[float, np.ndarray]:
         raw_params_tensor = torch.from_numpy(raw_params)
         raw_params_tensor.requires_grad_(True)
-        params = KernelParamsTensor(
+        kernel = Matern52Kernel(
             inverse_squared_lengthscales=torch.exp(raw_params_tensor[:n_params]),
-            kernel_scale=torch.exp(raw_params_tensor[n_params]),
+            scale=torch.exp(raw_params_tensor[n_params]),
             noise_var=(
                 torch.tensor(minimum_noise, dtype=torch.float64)
                 if deterministic_objective
                 else torch.exp(raw_params_tensor[n_params + 1]) + minimum_noise
             ),
+            is_categorical=is_categorical,
         )
-        loss = -marginal_log_likelihood(
-            torch.from_numpy(X), torch.from_numpy(Y), torch.from_numpy(is_categorical), params
-        ) - log_prior(params)
+        loss = -kernel.marginal_log_likelihood(
+            torch.from_numpy(X), torch.from_numpy(Y)
+        ) - log_prior(kernel)
         loss.backward()  # type: ignore
         # scipy.minimize requires all the gradients to be zero for termination.
         raw_noise_var_grad = raw_params_tensor.grad[n_params + 1]  # type: ignore
@@ -212,14 +165,15 @@ def _fit_kernel_params(
 
     raw_params_opt_tensor = torch.from_numpy(res.x)
 
-    res = KernelParamsTensor(
+    res = Matern52Kernel(
         inverse_squared_lengthscales=torch.exp(raw_params_opt_tensor[:n_params]),
-        kernel_scale=torch.exp(raw_params_opt_tensor[n_params]),
+        scale=torch.exp(raw_params_opt_tensor[n_params]),
         noise_var=(
             torch.tensor(minimum_noise, dtype=torch.float64)
             if deterministic_objective
             else minimum_noise + torch.exp(raw_params_opt_tensor[n_params + 1])
         ),
+        is_categorical=is_categorical,
     )
     return res
 
@@ -228,25 +182,26 @@ def fit_kernel_params(
     X: np.ndarray,
     Y: np.ndarray,
     is_categorical: np.ndarray,
-    log_prior: Callable[[KernelParamsTensor], torch.Tensor],
+    log_prior: Callable[[Matern52Kernel], torch.Tensor],
     minimum_noise: float,
     deterministic_objective: bool,
-    initial_kernel_params: KernelParamsTensor | None = None,
+    initial_kernel: Matern52Kernel | None = None,
     gtol: float = 1e-2,
-) -> KernelParamsTensor:
-    default_initial_kernel_params = KernelParamsTensor(
+) -> Matern52Kernel:
+    default_initial_kernel = Matern52Kernel(
         inverse_squared_lengthscales=torch.ones(X.shape[1], dtype=torch.float64),
-        kernel_scale=torch.tensor(1.0, dtype=torch.float64),
+        scale=torch.tensor(1.0, dtype=torch.float64),
         noise_var=torch.tensor(1.0, dtype=torch.float64),
+        is_categorical=is_categorical,
     )
-    if initial_kernel_params is None:
-        initial_kernel_params = default_initial_kernel_params
+    if initial_kernel is None:
+        initial_kernel = default_initial_kernel
 
     error = None
-    # First try optimizing the kernel params with the provided initial_kernel_params,
-    # but if it fails, rerun the optimization with the default initial_kernel_params.
+    # First try optimizing the kernel params with the provided initial_kernel,
+    # but if it fails, rerun the optimization with the default initial_kernel.
     # This increases the robustness of the optimization.
-    for init_kernel_params in [initial_kernel_params, default_initial_kernel_params]:
+    for init_kernel in [initial_kernel, default_initial_kernel]:
         try:
             return _fit_kernel_params(
                 X=X,
@@ -254,7 +209,7 @@ def fit_kernel_params(
                 is_categorical=is_categorical,
                 log_prior=log_prior,
                 minimum_noise=minimum_noise,
-                initial_kernel_params=init_kernel_params,
+                initial_kernel=init_kernel,
                 deterministic_objective=deterministic_objective,
                 gtol=gtol,
             )
@@ -265,4 +220,4 @@ def fit_kernel_params(
         f"The optimization of kernel_params failed: \n{error}\n"
         "The default initial kernel params will be used instead."
     )
-    return default_initial_kernel_params
+    return default_initial_kernel
