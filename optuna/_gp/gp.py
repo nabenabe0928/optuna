@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import typing
 from typing import Callable
@@ -40,13 +39,23 @@ else:
 logger = get_logger(__name__)
 
 
-@dataclass(frozen=True)
 class Matern52Kernel(torch.autograd.Function):
-    is_categorical: np.ndarray
-    # Kernel parameters to fit.
-    inverse_squared_lengthscales: torch.Tensor  # (len(params), )
-    scale: torch.Tensor  # Scalar
-    noise_var: torch.Tensor  # Scalar
+    def __init__(
+        self,
+        is_categorical: np.ndarray,
+        inverse_squared_lengthscales: torch.Tensor | None = None,  # (len(params), )
+        scale: torch.Tensor | None = None,  # Scalar
+        noise_var: torch.Tensor | None = None,  # Scalar
+    ):
+        n_params = is_categorical.size
+        self.is_categorical = is_categorical
+        self.inverse_squared_lengthscales = (
+            torch.ones(n_params, dtype=torch.float64)
+            if inverse_squared_lengthscales is None
+            else inverse_squared_lengthscales
+        )
+        self.scale = torch.tensor(1.0, dtype=torch.float64) if scale is None else scale
+        self.noise_var = torch.tensor(1.0, dtype=torch.float64) if noise_var is None else noise_var
 
     @staticmethod
     def forward(ctx: typing.Any, squared_distance: torch.Tensor) -> torch.Tensor:  # type: ignore
@@ -64,6 +73,12 @@ class Matern52Kernel(torch.autograd.Function):
         # then deriv := df/dx, grad := dg/df, and deriv * grad = df/dx * dg/df = dg/dx.
         (deriv,) = ctx.saved_tensors
         return deriv * grad
+
+    @property
+    def params_array(self) -> np.ndarray:
+        # We add 0.01 * minimum_noise to initial noise_var to avoid instability.
+        inv_squared_lscales = self.inverse_squared_lengthscales.detach().numpy()
+        return np.concatenate([inv_squared_lscales, [self.scale.item(), self.noise_var.item()]])
 
     def compute(self, X1: torch.Tensor, X2: torch.Tensor) -> torch.Tensor:
         """
@@ -100,6 +115,16 @@ def marginal_log_likelihood(
     )
 
 
+def _revert_raw_params(
+    raw_params_tensor: torch.Tensor, n_params: int, min_noise: float, deterministic: bool
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    inv_squared_lscales = torch.exp(raw_params_tensor[:n_params])
+    scale = torch.exp(raw_params_tensor[n_params])
+    noise_var = torch.tensor(min_noise, dtype=torch.float64)
+    noise_var += 0.0 if deterministic else torch.exp(raw_params_tensor[n_params + 1])
+    return inv_squared_lscales, scale, noise_var
+
+
 def _fit_kernel_params(
     X: np.ndarray,
     Y: np.ndarray,
@@ -112,35 +137,19 @@ def _fit_kernel_params(
 ) -> Matern52Kernel:
     n_params = X.shape[1]
 
-    # We apply log transform to enforce the positivity of the kernel parameters.
-    # Note that we cannot just use the constraint because of the numerical unstability
-    # of the marginal log likelihood.
-    # We also enforce the noise parameter to be greater than `minimum_noise` to avoid
-    # pathological behavior of maximum likelihood estimation.
-    initial_raw_params = np.concatenate(
-        [
-            np.log(initial_kernel.inverse_squared_lengthscales.detach().numpy()),
-            [
-                np.log(initial_kernel.scale.item()),
-                # We add 0.01 * minimum_noise to initial noise_var to avoid instability.
-                np.log(initial_kernel.noise_var.item() - 0.99 * minimum_noise),
-            ],
-        ]
-    )
+    initial_raw_params = initial_kernel.params_array
+    # We add 0.01 * minimum_noise to initial noise_var to avoid instability.
+    initial_raw_params[-1] -= 0.99 * minimum_noise
+    # Log transformation to enforce the positivity of the kernel parameters.
+    initial_raw_params = np.log(initial_raw_params)
 
     def loss_func(raw_params: np.ndarray) -> tuple[float, np.ndarray]:
         raw_params_tensor = torch.from_numpy(raw_params)
         raw_params_tensor.requires_grad_(True)
-        kernel = Matern52Kernel(
-            inverse_squared_lengthscales=torch.exp(raw_params_tensor[:n_params]),
-            scale=torch.exp(raw_params_tensor[n_params]),
-            noise_var=(
-                torch.tensor(minimum_noise, dtype=torch.float64)
-                if deterministic_objective
-                else torch.exp(raw_params_tensor[n_params + 1]) + minimum_noise
-            ),
-            is_categorical=is_categorical,
+        inv_squared_lscales, scale, noise_var = _revert_raw_params(
+            raw_params_tensor, n_params, minimum_noise, deterministic_objective
         )
+        kernel = Matern52Kernel(is_categorical, inv_squared_lscales, scale, noise_var)
         loss = -log_prior(kernel) - marginal_log_likelihood(
             kernel, torch.from_numpy(X), torch.from_numpy(Y)
         )
@@ -151,30 +160,18 @@ def _fit_kernel_params(
         return loss.item(), raw_params_tensor.grad.detach().numpy()  # type: ignore
 
     # jac=True means loss_func returns the gradient for gradient descent.
+    # Too small `gtol` causes instability in loss_func optimization.
     res = so.minimize(
-        # Too small `gtol` causes instability in loss_func optimization.
-        loss_func,
-        initial_raw_params,
-        jac=True,
-        method="l-bfgs-b",
-        options={"gtol": gtol},
+        loss_func, initial_raw_params, jac=True, method="l-bfgs-b", options={"gtol": gtol}
     )
     if not res.success:
         raise RuntimeError(f"Optimization failed: {res.message}")
 
     raw_params_opt_tensor = torch.from_numpy(res.x)
-
-    res = Matern52Kernel(
-        inverse_squared_lengthscales=torch.exp(raw_params_opt_tensor[:n_params]),
-        scale=torch.exp(raw_params_opt_tensor[n_params]),
-        noise_var=(
-            torch.tensor(minimum_noise, dtype=torch.float64)
-            if deterministic_objective
-            else minimum_noise + torch.exp(raw_params_opt_tensor[n_params + 1])
-        ),
-        is_categorical=is_categorical,
+    inv_squared_lscales, scale, noise_var = _revert_raw_params(
+        raw_params_opt_tensor, n_params, minimum_noise, deterministic_objective
     )
-    return res
+    return Matern52Kernel(is_categorical, inv_squared_lscales, scale, noise_var)
 
 
 def fit_kernel_params(
@@ -187,18 +184,12 @@ def fit_kernel_params(
     initial_kernel: Matern52Kernel | None = None,
     gtol: float = 1e-2,
 ) -> Matern52Kernel:
-    default_initial_kernel = Matern52Kernel(
-        inverse_squared_lengthscales=torch.ones(X.shape[1], dtype=torch.float64),
-        scale=torch.tensor(1.0, dtype=torch.float64),
-        noise_var=torch.tensor(1.0, dtype=torch.float64),
-        is_categorical=is_categorical,
-    )
+    default_initial_kernel = Matern52Kernel(is_categorical=is_categorical)
     if initial_kernel is None:
         initial_kernel = default_initial_kernel
 
     error = None
-    # First try optimizing the kernel params with the provided initial_kernel,
-    # but if it fails, rerun the optimization with the default initial_kernel.
+    # First try optimizing the provided kernel params. If it fails, try the default initial_kernel.
     # This increases the robustness of the optimization.
     for init_kernel in [initial_kernel, default_initial_kernel]:
         try:
