@@ -53,27 +53,26 @@ class BaseAcquisitionFunc(metaclass=ABCMeta):
         X: np.ndarray,
         Y: np.ndarray,
     ):
-        X_tensor = torch.from_numpy(X)
-        is_categorical = torch.from_numpy(search_space.scale_types == ScaleType.CATEGORICAL)
+        self.search_space = search_space
+        self._X = torch.from_numpy(X)
+        self._kernel_params = kernel_params
+        self._is_categorical = torch.from_numpy(search_space.scale_types == ScaleType.CATEGORICAL)
         with torch.no_grad():
-            cov_Y_Y = kernel(is_categorical, kernel_params, X_tensor, X_tensor).detach().numpy()
+            cov_Y_Y = kernel(self._is_categorical, kernel_params, self._X, self._X).detach().numpy()
             cov_Y_Y[np.diag_indices(X.shape[0])] += kernel_params.noise_var.item()
 
-        self.search_space = search_space
-        self._X = X
-        self._is_categorical = search_space.scale_types == ScaleType.CATEGORICAL
-        self._cov_Y_Y_inv = np.linalg.inv(cov_Y_Y)
-        self._cov_Y_Y_inv_Y = self._cov_Y_Y_inv @ Y
-        self._kernel_params = kernel_params
+        cov_Y_Y_inv = np.linalg.inv(cov_Y_Y)
+        self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
+        self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
 
     def _poterior(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return posterior(
-            self._kernel_params,
-            torch.from_numpy(self._X),
-            torch.from_numpy(self._is_categorical),
-            torch.from_numpy(self._cov_Y_Y_inv),
-            torch.from_numpy(self._cov_Y_Y_inv_Y),
-            x,
+            kernel_params=self._kernel_params,
+            X=self._X,
+            is_categorical=self._is_categorical,
+            cov_Y_Y_inv=self._cov_Y_Y_inv,
+            cov_Y_Y_inv_Y=self._cov_Y_Y_inv_Y,
+            x=x,
         )
 
     @abstractmethod
