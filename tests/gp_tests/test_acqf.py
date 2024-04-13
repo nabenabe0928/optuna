@@ -4,30 +4,21 @@ import numpy as np
 import pytest
 import torch
 
-from optuna._gp.acqf import AcquisitionFunctionType
-from optuna._gp.acqf import create_acqf_params
-from optuna._gp.acqf import eval_acqf
+from optuna._gp.acqf import BaseAcquisitionFunc
+
+from optuna._gp.acqf import LCB
+from optuna._gp.acqf import LogEI
+from optuna._gp.acqf import UCB
 from optuna._gp.gp import KernelParamsTensor
 from optuna._gp.search_space import ScaleType
 from optuna._gp.search_space import SearchSpace
 
 
-@pytest.mark.parametrize(
-    "acqf_type, beta",
-    [
-        (AcquisitionFunctionType.LOG_EI, None),
-        (AcquisitionFunctionType.UCB, 2.0),
-        (AcquisitionFunctionType.LCB, 2.0),
-    ],
-)
+@pytest.mark.parametrize("acqf_cls", [LogEI, UCB, LCB])
 @pytest.mark.parametrize(
     "x", [np.array([0.15, 0.12]), np.array([[0.15, 0.12], [0.0, 1.0]])]  # unbatched  # batched
 )
-def test_eval_acqf(
-    acqf_type: AcquisitionFunctionType,
-    beta: float | None,
-    x: np.ndarray,
-) -> None:
+def test_eval_acqf(acqf_cls: BaseAcquisitionFunc, x: np.ndarray) -> None:
     n_dims = 2
     X = np.array([[0.1, 0.2], [0.2, 0.3], [0.3, 0.1]])
     Y = np.array([1.0, 2.0, 3.0])
@@ -42,25 +33,19 @@ def test_eval_acqf(
         steps=np.zeros(n_dims),
     )
 
-    acqf_params = create_acqf_params(
-        acqf_type=acqf_type,
-        kernel_params=kernel_params,
-        search_space=search_space,
-        X=X,
-        Y=Y,
-        beta=beta,
-        acqf_stabilizing_noise=0.0,
+    kwargs = dict(stabilizing_noise=0.0) if acqf_cls == LogEI else dict(beta=2.0)
+    acqf = acqf_cls(
+        kernel_params=kernel_params, search_space=search_space, X=X, Y=Y, **kwargs
     )
 
-    x_tensor = torch.from_numpy(x)
-    x_tensor.requires_grad_(True)
+    if x.ndim == 1:
+        acqf_value, grad = acqf.eval_with_grad(x)
+        assert grad is not None
+        assert grad.shape == x.shape
+        assert np.all(np.isfinite(grad))
+        assert np.isfinite(acqf_value)
+        assert isinstance(acqf_value, float)
 
-    acqf_value = eval_acqf(acqf_params, x_tensor)
-    acqf_value.sum().backward()  # type: ignore
-    acqf_grad = x_tensor.grad
-    assert acqf_grad is not None
-
+    acqf_value = acqf.eval_with_no_grad(x)
     assert acqf_value.shape == x.shape[:-1]
-
-    assert torch.all(torch.isfinite(acqf_value))
-    assert torch.all(torch.isfinite(acqf_grad))
+    assert np.all(np.isfinite(acqf_value))

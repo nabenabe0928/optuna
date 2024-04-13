@@ -130,8 +130,7 @@ class RegretBoundEvaluator(BaseImprovementEvaluator):
 
         # calculate max_ucb
         beta = _get_beta(n_params, n_trials)
-        ucb_acqf_params = acqf.create_acqf_params(
-            acqf_type=acqf.AcquisitionFunctionType.UCB,
+        ucb_acqf = acqf.UCB(
             kernel_params=kernel_params,
             search_space=gp_search_space,
             X=normalized_top_n_params,
@@ -140,15 +139,14 @@ class RegretBoundEvaluator(BaseImprovementEvaluator):
         )
         # UCB over the search space. (Original: LCB over the search space. See Change 1 above.)
         standardized_ucb_value = max(
-            acqf.eval_acqf_no_grad(ucb_acqf_params, normalized_top_n_params).max(),
+            np.max(ucb_acqf.eval_with_no_grad(normalized_top_n_params)),
             optim_sample.optimize_acqf_sample(
-                ucb_acqf_params, n_samples=self._optimize_n_samples, rng=self._rng.rng
+                ucb_acqf, n_samples=self._optimize_n_samples, rng=self._rng.rng
             )[1],
         )
 
         # calculate min_lcb
-        lcb_acqf_params = acqf.create_acqf_params(
-            acqf_type=acqf.AcquisitionFunctionType.LCB,
+        lcb_acqf = acqf.LCB(
             kernel_params=kernel_params,
             search_space=gp_search_space,
             X=normalized_top_n_params,
@@ -156,9 +154,7 @@ class RegretBoundEvaluator(BaseImprovementEvaluator):
             beta=beta,
         )
         # LCB over the top trials. (Original: UCB over the top trials. See Change 2 above.)
-        standardized_lcb_value = np.max(
-            acqf.eval_acqf_no_grad(lcb_acqf_params, normalized_top_n_params)
-        )
+        standardized_lcb_value = np.max(lcb_acqf.eval_with_no_grad(normalized_top_n_params))
 
         # max(UCB) - max(LCB). (Original: min(UCB) - min(LCB). See Change 3 above.)
         return standardized_ucb_value - standardized_lcb_value  # standardized regret bound
