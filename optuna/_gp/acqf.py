@@ -47,10 +47,14 @@ class BaseAcquisitionFunc(metaclass=ABCMeta):
     def __init__(
         self, kernel: Matern52Kernel, search_space: SearchSpace, X: np.ndarray, Y: np.ndarray
     ):
+        is_categorical = search_space.scale_types == ScaleType.CATEGORICAL
+        # X must be normalized and Y must be standardized.
+        assert (np.min(X[..., is_categorical]) >= 0.0) & (np.max(X[..., is_categorical]) <= 1.0)
+        assert np.isclose(np.mean(Y), 0.0) & np.isclose(np.std(Y), 1.0)
+
         self.search_space = search_space
         self._X = torch.from_numpy(X)
         self._kernel = kernel
-        self._is_categorical = torch.from_numpy(search_space.scale_types == ScaleType.CATEGORICAL)
         with torch.no_grad():
             cov_Y_Y = self._kernel.compute(self._X, self._X).detach().numpy()
             cov_Y_Y[np.diag_indices(X.shape[0])] += self._kernel.noise_var.item()
