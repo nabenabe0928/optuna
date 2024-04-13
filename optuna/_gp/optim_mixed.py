@@ -141,14 +141,10 @@ def _discrete_line_search(
         return w_left * neg_acqf_left + w_right * neg_acqf_right
 
     EPS = 1e-12
-    res = so.minimize_scalar(
-        interpolated_negative_acqf,
-        # The values of this bracket are (inf, -fval, inf).
-        # This trivially satisfies the bracket condition if fval is finite.
-        bracket=(grids[0] - EPS, grids[current_choice_i], grids[-1] + EPS),
-        method="brent",
-        tol=xtol,
-    )
+    # The values of this bracket are (inf, -fval, inf).
+    # This trivially satisfies the bracket condition if fval is finite.
+    bracket = (grids[0] - EPS, grids[current_choice_i], grids[-1] + EPS)
+    res = so.minimize_scalar(interpolated_negative_acqf, bracket=bracket, method="brent", tol=xtol)
     opt_idx = find_nearest_index(res.x)
     fval_opt = -negative_acqf_with_cache(opt_idx)
 
@@ -194,9 +190,7 @@ def local_search_mixed(
     continuous_indices = np.where(steps == 0.0)[0]
 
     inv_squared_lengthscales = acqf._kernel.inverse_squared_lengthscales.detach().numpy()
-    # This is a technique for speeding up optimization.
-    # We use an isotropic kernel, so scaling the gradient will make
-    # the Hessian better-conditioned.
+    # This is technique known as preconditioning, leading to a quicker convergence.
     lengthscales = 1 / np.sqrt(inv_squared_lengthscales[continuous_indices])
 
     discrete_indices = np.where(steps > 0)[0]
@@ -214,11 +208,10 @@ def local_search_mixed(
         for i in discrete_indices
     ]
 
+    # Terminate discrete optimizations once the change in x becomes smaller than this.
+    # Basically, if the change is smaller than min(dx) / 4, it is useless to see more details.
     discrete_xtols = [
-        # Terminate discrete optimizations once the change in x becomes smaller than this.
-        # Basically, if the change is smaller than min(dx) / 4, it is useless to see more details.
-        np.min(np.diff(choices), initial=np.inf) / 4
-        for choices in choices_of_discrete_params
+        np.min(np.diff(choices), initial=np.inf) / 4 for choices in choices_of_discrete_params
     ]
 
     best_normalized_params = initial_normalized_params.copy()
@@ -228,8 +221,7 @@ def local_search_mixed(
     last_changed_param: int | None = None
 
     for _ in range(max_iter):
-        if last_changed_param == CONTINUOUS:
-            # Parameters not changed since last time.
+        if last_changed_param == CONTINUOUS:  # Parameters not changed since last time.
             return (best_normalized_params, best_fval)
         (best_normalized_params, best_fval, updated) = _gradient_ascent(
             acqf, best_normalized_params, best_fval, continuous_indices, lengthscales, tol
@@ -238,8 +230,7 @@ def local_search_mixed(
             last_changed_param = CONTINUOUS
 
         for i, choices, xtol in zip(discrete_indices, choices_of_discrete_params, discrete_xtols):
-            if last_changed_param == i:
-                # Parameters not changed since last time.
+            if last_changed_param == i:  # Parameters not changed since last time.
                 return (best_normalized_params, best_fval)
             (best_normalized_params, best_fval, updated) = _local_search_discrete(
                 acqf, best_normalized_params, best_fval, i, choices, xtol
@@ -247,8 +238,7 @@ def local_search_mixed(
             if updated:
                 last_changed_param = i
 
-        if last_changed_param is None:
-            # Parameters not changed from the beginning.
+        if last_changed_param is None:  # Parameters not changed from the beginning.
             return (best_normalized_params, best_fval)
 
     _logger.warn("local_search_mixed: Local search did not converge.")

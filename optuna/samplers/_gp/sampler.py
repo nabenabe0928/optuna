@@ -122,9 +122,6 @@ class GPSampler(BaseSampler):
         normalized_params, _acqf_val = optim_mixed.optimize_acqf_mixed(
             acqf,
             warmstart_normalized_params_array=best_params[None, :],
-            n_preliminary_samples=2048,
-            n_local_search=10,
-            tol=1e-4,
             rng=self._rng.rng,
         )
         return normalized_params
