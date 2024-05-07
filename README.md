@@ -8,6 +8,6 @@ $ pip install pandas matplotlib
 Then run the following:
 
 ```shell
-$ python experiments.py
+$ python experiments.py --mode main
 $ python viz.py
 ```
