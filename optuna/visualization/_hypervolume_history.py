@@ -10,7 +10,7 @@ from optuna._hypervolume import WFG
 from optuna.logging import get_logger
 from optuna.samplers._base import _CONSTRAINTS_KEY
 from optuna.study import Study
-from optuna.study._multi_objective import _dominates
+from optuna.study._multi_objective import _fast_non_domination_rank
 from optuna.study._study_direction import StudyDirection
 from optuna.trial import FrozenTrial
 from optuna.trial import TrialState
@@ -107,9 +107,36 @@ def _get_hypervolume_history_plot(
     return go.Figure(data=data, layout=layout)
 
 
+def _get_loss_values_and_non_dominated_rank(
+    completed_trials: list[FrozenTrial], signs: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    
+    objective_values = []
+    penalty = []
+    for t in completed_trials:
+        objective_values.append(t.values)
+        if _CONSTRAINTS_KEY not in t.system_attrs:
+            penalty.append(np.nan)
+            continue
+        
+        constraint_values = t.system_attrs[_CONSTRAINTS_KEY]
+        penalty.append(sum([max(0, v) for v in constraint_values]))
+
+    consider_constraint = not np.all(np.isnan(penalty))
+    loss_values = signs * np.asarray(objective_values)
+    if consider_constraint:
+        penalty_array = np.asarray(penalty)
+        nd_ranks = _fast_non_domination_rank(loss_values, penalty_array)
+        is_infeasible = penalty_array > 0
+        nd_ranks[is_infeasible] = -1
+    else:
+        nd_ranks = _fast_non_domination_rank(loss_values)
+
+    return loss_values, nd_ranks
+
+
 def _get_hypervolume_history_info(
-    study: Study,
-    reference_point: np.ndarray,
+    study: Study, reference_point: np.ndarray
 ) -> _HypervolumeHistoryInfo:
     completed_trials = study.get_trials(deepcopy=False, states=(TrialState.COMPLETE,))
 
@@ -119,46 +146,33 @@ def _get_hypervolume_history_info(
     # Our hypervolume computation module assumes that all objectives are minimized.
     # Here we transform the objective values and the reference point.
     signs = np.asarray([1 if d == StudyDirection.MINIMIZE else -1 for d in study.directions])
-    minimization_reference_point = signs * reference_point
+    minimization_ref_point = signs * reference_point
+    loss_vals, nd_ranks = _get_loss_values_and_non_dominated_rank(completed_trials, signs)
 
     # Only feasible trials are considered in hypervolume computation.
-    trial_numbers = []
+    best_hypervolume = 0.0
+    best_nd_rank = 1 << 30  # Any big integer.
     values = []
-    best_trials: list[FrozenTrial] = []
-    hypervolume = 0.0
-    for trial in completed_trials:
-        trial_numbers.append(trial.number)
-
-        has_constraints = _CONSTRAINTS_KEY in trial.system_attrs
-        if has_constraints:
-            constraints_values = trial.system_attrs[_CONSTRAINTS_KEY]
-            if any(map(lambda x: x > 0.0, constraints_values)):
-                # The trial is infeasible.
-                values.append(hypervolume)
-                continue
-
-        if any(map(lambda t: _dominates(t, trial, study.directions), best_trials)):
-            # The trial is not on the Pareto front.
-            values.append(hypervolume)
+    cur_pareto_indices = []
+    is_values_valid = np.all(loss_vals <= minimization_ref_point, axis=-1)
+    for i in range(len(completed_trials)):
+        if nd_ranks[i] == -1 or not is_values_valid[i]:
+            # Infeasible or the current best trials do not dominate the reference point.
+            values.append(best_hypervolume)
             continue
 
-        best_trials = list(
-            filter(lambda t: not _dominates(trial, t, study.directions), best_trials)
-        ) + [trial]
+        cur_loss_vals_is_better = loss_vals[i] <= loss_vals[cur_pareto_indices]
+        if nd_ranks[i] <= best_nd_rank or not np.any(np.all(~cur_loss_vals_is_better, axis=-1)):
+            dominated = np.all(cur_loss_vals_is_better, axis=-1)
+            cur_pareto_indices = np.array(cur_pareto_indices)[~dominated].tolist()
+            cur_pareto_indices.append(i)
+            best_nd_rank = min(nd_ranks[i], best_nd_rank)
+            best_hypervolume = WFG().compute(loss_vals[cur_pareto_indices], minimization_ref_point)
 
-        solution_set = np.asarray(
-            list(
-                filter(
-                    lambda v: (v <= minimization_reference_point).all(),
-                    [signs * trial.values for trial in best_trials],
-                )
-            )
-        )
-        if solution_set.size > 0:
-            hypervolume = WFG().compute(solution_set, minimization_reference_point)
-        values.append(hypervolume)
+        values.append(best_hypervolume)
 
-    if len(best_trials) == 0:
+    if not np.any(nd_ranks == 0):
         _logger.warning("Your study does not have any feasible trials.")
 
+    trial_numbers = [t.number for t in completed_trials]
     return _HypervolumeHistoryInfo(trial_numbers, values)
