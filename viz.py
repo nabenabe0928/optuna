@@ -129,7 +129,7 @@ def plot_ablation_figure():
     zeros = [[0, 0], [0, 0]]
     cb = axes[0, 0].contourf(zeros, zeros, zeros, np.arange(2, 11), cmap=plt.get_cmap("jet"))
     cbar = fig.colorbar(cb, ax=axes.ravel().tolist(), pad=0.025)
-    cbar.ax.set_title("$c_d$", y=1.01)
+    cbar.ax.set_title("$b_d$", y=1.01)
     fig.supxlabel("\# of Evaluations", x=0.44, y=0.025)
     fig.supylabel("Objective Value", x=0.07)
 
