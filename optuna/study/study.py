@@ -16,12 +16,12 @@ import warnings
 
 import numpy as np
 
+import optuna
 from optuna import exceptions
 from optuna import logging
 from optuna import pruners
 from optuna import samplers
 from optuna import storages
-from optuna import trial as trial_module
 from optuna._convert_positional_args import convert_positional_args
 from optuna._deprecated import deprecated_func
 from optuna._experimental import experimental_func
@@ -30,13 +30,14 @@ from optuna._typing import JSONSerializable
 from optuna.distributions import _convert_old_distribution_to_new_distribution
 from optuna.distributions import BaseDistribution
 from optuna.storages._heartbeat import is_heartbeat_enabled
+from optuna.study._constrained_optimization import _CONSTRAINTS_KEY
+from optuna.study._constrained_optimization import _get_feasible_trials
 from optuna.study._multi_objective import _get_pareto_front_trials
 from optuna.study._optimize import _optimize
 from optuna.study._study_direction import StudyDirection
 from optuna.study._study_summary import StudySummary  # NOQA
 from optuna.study._tell import _tell_with_warning
 from optuna.trial import create_trial
-from optuna.trial import FrozenTrial
 from optuna.trial import TrialState
 
 
@@ -44,9 +45,13 @@ _dataframe = _LazyImport("optuna.study._dataframe")
 
 if TYPE_CHECKING:
     from optuna.study._dataframe import pd
+    from optuna.trial import FrozenTrial
+    from optuna.trial import Trial
 
 
-ObjectiveFuncType = Callable[[trial_module.Trial], Union[float, Sequence[float]]]
+ObjectiveFuncType = Callable[["Trial"], Union[float, Sequence[float]]]
+
+
 _SYSTEM_ATTR_METRIC_NAMES = "study:metric_names"
 
 
@@ -55,7 +60,7 @@ _logger = logging.get_logger(__name__)
 
 class _ThreadLocalStudyAttribute(threading.local):
     in_optimize_loop: bool = False
-    cached_all_trials: list["FrozenTrial"] | None = None
+    cached_all_trials: list[FrozenTrial] | None = None
 
 
 class Study:
@@ -154,7 +159,23 @@ class Study:
                 "using Study.best_trials to retrieve a list containing the best trials."
             )
 
-        return copy.deepcopy(self._storage.get_best_trial(self._study_id))
+        best_trial = self._storage.get_best_trial(self._study_id)
+
+        # If the trial with the best value is infeasible, select the best trial from all feasible
+        # trials. Note that the behavior is undefined when constrained optimization without the
+        # violation value in the best-valued trial.
+        constraints = best_trial.system_attrs.get(_CONSTRAINTS_KEY)
+        if constraints is not None and any([x > 0.0 for x in constraints]):
+            complete_trials = self.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
+            feasible_trials = _get_feasible_trials(complete_trials)
+            if len(feasible_trials) == 0:
+                raise ValueError("No feasible trials are completed yet.")
+            if self.direction == StudyDirection.MAXIMIZE:
+                best_trial = max(feasible_trials, key=lambda t: cast(float, t.value))
+            else:
+                best_trial = min(feasible_trials, key=lambda t: cast(float, t.value))
+
+        return copy.deepcopy(best_trial)
 
     @property
     def best_trials(self) -> list[FrozenTrial]:
@@ -169,7 +190,11 @@ class Study:
             A list of :class:`~optuna.trial.FrozenTrial` objects.
         """
 
-        return _get_pareto_front_trials(self)
+        # Check whether the study is constrained optimization.
+        trials = self.get_trials(deepcopy=False)
+        is_constrained = any((_CONSTRAINTS_KEY in trial.system_attrs) for trial in trials)
+
+        return _get_pareto_front_trials(self, consider_constraint=is_constrained)
 
     @property
     def direction(self) -> StudyDirection:
@@ -352,7 +377,7 @@ class Study:
         timeout: float | None = None,
         n_jobs: int = 1,
         catch: Iterable[type[Exception]] | type[Exception] = (),
-        callbacks: list[Callable[["Study", FrozenTrial], None]] | None = None,
+        callbacks: list[Callable[[Study, FrozenTrial], None]] | None = None,
         gc_after_trial: bool = False,
         show_progress_bar: bool = False,
     ) -> None:
@@ -439,10 +464,9 @@ class Study:
                     :ref:`out-of-memory-gc-collect`
 
             show_progress_bar:
-                Flag to show progress bars or not. To disable progress bar, set this :obj:`False`.
-                Currently, progress bar is experimental feature and disabled
-                when ``n_trials`` is :obj:`None`, ``timeout`` is not :obj:`None`, and
-                ``n_jobs`` :math:`\\ne 1`.
+                Flag to show progress bars or not. To show progress bar, set this :obj:`True`.
+                Note that it is disabled when ``n_trials`` is :obj:`None`,
+                ``timeout`` is not :obj:`None`, and ``n_jobs`` :math:`\\ne 1`.
 
         Raises:
             RuntimeError:
@@ -460,9 +484,7 @@ class Study:
             show_progress_bar=show_progress_bar,
         )
 
-    def ask(
-        self, fixed_distributions: dict[str, BaseDistribution] | None = None
-    ) -> trial_module.Trial:
+    def ask(self, fixed_distributions: dict[str, BaseDistribution] | None = None) -> Trial:
         """Create a new trial from which hyperparameters can be suggested.
 
         This method is part of an alternative to :func:`~optuna.study.Study.optimize` that allows
@@ -541,7 +563,7 @@ class Study:
         trial_id = self._pop_waiting_trial_id()
         if trial_id is None:
             trial_id = self._storage.create_new_trial(self._study_id)
-        trial = trial_module.Trial(self, trial_id)
+        trial = optuna.Trial(self, trial_id)
 
         for name, param in fixed_distributions.items():
             trial._suggest(name, param)
@@ -550,7 +572,7 @@ class Study:
 
     def tell(
         self,
-        trial: trial_module.Trial | int,
+        trial: Trial | int,
         values: float | Sequence[float] | None = None,
         state: TrialState | None = None,
         skip_if_finished: bool = False,
@@ -1076,17 +1098,7 @@ class Study:
 
         return False
 
-    @deprecated_func("2.5.0", "4.0.0")
-    def _ask(self) -> trial_module.Trial:
-        return self.ask()
-
-    @deprecated_func("2.5.0", "4.0.0")
-    def _tell(
-        self, trial: trial_module.Trial, state: TrialState, values: list[float] | None
-    ) -> None:
-        self.tell(trial, values, state)
-
-    def _log_completed_trial(self, trial: trial_module.FrozenTrial) -> None:
+    def _log_completed_trial(self, trial: FrozenTrial) -> None:
         if not _logger.isEnabledFor(logging.INFO):
             return
 
