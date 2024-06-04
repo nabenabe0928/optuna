@@ -50,6 +50,7 @@ def _compute_3d(solution_set: np.ndarray, reference_point: np.ndarray) -> float:
 
     This algorithm is based on Algorithm 2 in the reference.
     The time complexity of this algorithm is O(n_trials log n_trials).
+    Figures 2 and 3 are helpful to understand the intuition.    
 
     Args:
         solution_set:
