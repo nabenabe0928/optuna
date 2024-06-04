@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from optuna._hypervolume import _compute_2d
+from optuna._hypervolume import _try_compute_3d
 from optuna._hypervolume import BaseHypervolume
 from optuna.study._multi_objective import _is_pareto_front
 
@@ -25,6 +26,10 @@ class WFG(BaseHypervolume):
         self._reference_point = reference_point.astype(np.float64)
         if self._reference_point.shape[0] == 2:
             return _compute_2d(solution_set, self._reference_point)
+        if self._reference_point.shape[0] == 3:
+            hv = _try_compute_3d(solution_set, self._reference_point)
+            if hv is not None:
+                return hv
 
         return self._compute_hv(solution_set[solution_set[:, 0].argsort()].astype(np.float64))
 
