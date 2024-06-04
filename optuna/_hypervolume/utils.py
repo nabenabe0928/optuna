@@ -76,12 +76,16 @@ def _compute_3d(solution_set: np.ndarray, reference_point: np.ndarray) -> float:
         assert 0 < left <= right < n_nondominated
         diagonal_point = np.asarray([nondominated_Y[right], nondominated_Z[-left]])
         inclusive_hv = np.prod(diagonal_point - loss_value[1:])
-        dominated_sols = np.stack([nondominated_Y[left:right], list(reversed(nondominated_Z[-right:-left]))], axis=-1)
+        dominated_sols = np.stack(
+            [nondominated_Y[left:right], list(reversed(nondominated_Z[-right:-left]))], axis=-1
+        )
         del nondominated_Y[left:right]
         del nondominated_Z[-right:-left]
         nondominated_Y.add(loss_value[1])
         nondominated_Z.add(loss_value[2])
-        hv += (inclusive_hv - _compute_2d(dominated_sols, diagonal_point)) * (reference_point[0] - loss_value[0])
+        hv += (inclusive_hv - _compute_2d(dominated_sols, diagonal_point)) * (
+            reference_point[0] - loss_value[0]
+        )
 
     return hv
 
