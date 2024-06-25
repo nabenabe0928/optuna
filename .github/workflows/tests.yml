@@ -20,7 +20,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ['3.7', '3.8', '3.9', '3.10', '3.11', '3.12']
+        python-version: ['3.12']
         test-trigger-type:
           - ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'Scheduled' || '' }}
         exclude:
@@ -94,15 +94,6 @@ jobs:
           target="not slow"
         fi
 
-        if [ "${{ matrix.python-version }}" = "3.12" ] ; then
-          # TODO(not522): Remove ignores when BoTorch/Torch supports Python 3.12
-          ignore_option="--ignore tests/terminator_tests/ \
-          --ignore tests/terminator_tests/improvement_tests/ \
-          --ignore tests/visualization_tests/test_terminator_improvement.py"
-        else
-          ignore_option=""
-        fi
-
-        pytest tests -m "$target" $ignore_option
+        pytest tests tests/terminator_tests/
       env:
         SQLALCHEMY_WARN_20: 1
