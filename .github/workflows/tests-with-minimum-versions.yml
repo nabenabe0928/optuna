@@ -60,15 +60,17 @@ jobs:
       run: |
         # Install dependencies with minimum versions.
         pip install alembic==1.5.0 \
-          cmaes==0.10.0 \
           packaging==20.0 \
           sqlalchemy==1.3.0 \
           numpy==1.20.3 \
           tqdm==4.27.0 \
           colorlog==0.3 \
           PyYAML==5.1 \
-          plotly==5.0.0 \  # optional extras
-          scikit-learn==0.24.2  # optional extras
+        # Optional Extras
+        pip install \
+          cmaes==0.10.0 \
+          plotly==5.0.0 \
+          scikit-learn==0.24.2
 
     - name: Install
       run: |
