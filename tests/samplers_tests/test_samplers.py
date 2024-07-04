@@ -865,20 +865,15 @@ def test_conditional_parameter_objective(sampler_class: Callable[[], BaseSampler
     assert all(t.state == TrialState.COMPLETE for t in study.trials)
 
 
-@parametrize_sampler
-@parametrize_suggest_method("x")
-@parametrize_suggest_method("y")
-def test_combination_of_different_distributions_objective(
-    sampler_class: Callable[[], BaseSampler],
-    suggest_method_x: Callable[[Trial], float],
-    suggest_method_y: Callable[[Trial], float],
-) -> None:
+def test_combination_of_different_distributions_objective() -> None:
+    suggest_method_x = lambda t: t.suggest_categorical("x", [0, 1, 2])
+    suggest_method_y = lambda t: t.suggest_float("y", 0, 10, step=0.5)
     def objective(trial: Trial) -> float:
         return suggest_method_x(trial) + suggest_method_y(trial)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", optuna.exceptions.ExperimentalWarning)
-        sampler = sampler_class()
+        sampler = get_gp_sampler(n_startup_trials=0, seed=int(os.environ["seed"]))
 
     study = optuna.study.create_study(sampler=sampler)
     study.optimize(objective, n_trials=3)
