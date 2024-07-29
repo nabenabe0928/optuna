@@ -45,6 +45,7 @@ from optuna.samplers._tpe._erf import erf
 
 _norm_pdf_C = math.sqrt(2 * math.pi)
 _norm_pdf_logC = math.log(_norm_pdf_C)
+_log_2_pi = math.log(2 * math.pi)
 
 
 def _log_sum(log_p: np.ndarray, log_q: np.ndarray) -> np.ndarray:
@@ -81,7 +82,7 @@ def _log_ndtr_single(a: float) -> float:
     if a > -20:
         return math.log(_ndtr_single(a))
 
-    log_LHS = -0.5 * a**2 - math.log(-a) - 0.5 * math.log(2 * math.pi)
+    log_LHS = -0.5 * a**2 - math.log(-a) - 0.5 * _log_2_pi
     last_total = 0.0
     right_hand_side = 1.0
     numerator = 1.0
@@ -149,11 +150,20 @@ def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def _bisect(f: Callable[[float], float], a: float, b: float, c: float) -> float:
+    if a == b:
+        return a
     if f(a) > c:
         a, b = b, a
-    # TODO(amylase): Justify this constant
-    for _ in range(100):
-        m = (a + b) / 2
+
+    # NOTE(nabenabe): 2e-5 is added so that tol becomes 1e-11 when we expect a small return.
+    # By doing so, we can guarantee that at least the top-5 digits are correct anytime.
+    min_abs = min(abs(a), abs(b)) + 2e-5
+    tol = 1e-6 * (10 ** (int(math.log(min_abs) / math.log(10) - 1)) if min_abs < 1.0 else 1.0)
+    sign = 1.0 if a >= 0 else  -1.0
+    assert a * b >= 0.0, f"NDTRI_EXP_BOUNDS.size={NDTRI_EXP_BOUNDS.size} must be an odd number."
+    while b - a > tol:
+        # NOTE(nabenabe): The convergence speed depends on whether min_abs > 1.0 or not.
+        m = sign * math.sqrt(a * b) if min_abs > 1.0 else (a + b) / 2
         if f(m) < c:
             a = m
         else:
@@ -161,13 +171,28 @@ def _bisect(f: Callable[[float], float], a: float, b: float, c: float) -> float:
     return m
 
 
-def _ndtri_exp_single(y: float) -> float:
-    # TODO(amylase): Justify this constant
-    return _bisect(_log_ndtr_single, -100, +100, y)
+# NOTE(nabenabe): 50 comes from the fact that the lower bound of sigma is (high - low) / 100,
+# meaning that values outside of 50 sigma are rejected by truncation.
+NDTRI_EXP_LOWER = -50
+NDTRI_EXP_UPPER = 50
+# NOTE(nabenabe): The step size must be an odd number to make this array have the center,
+# i.e., 0.0. Otherwise, _bisect will yield an error when it takes geometric mean.
+NDTRI_EXP_BOUNDS = np.linspace(
+    NDTRI_EXP_LOWER, NDTRI_EXP_UPPER, (NDTRI_EXP_UPPER - NDTRI_EXP_LOWER) * 60 + 1
+)
+_LOG_NDTR_MEMO = _log_ndtr(NDTRI_EXP_BOUNDS)
+
+
+def _ndtri_exp_single(y: float, lower: float, upper: float) -> float:
+    return _bisect(_log_ndtr_single, lower, upper, y)
 
 
 def _ndtri_exp(y: np.ndarray) -> np.ndarray:
-    return np.frompyfunc(_ndtri_exp_single, 1, 1)(y).astype(float)
+    n_grids = _LOG_NDTR_MEMO.size
+    upper_bound_indices = np.searchsorted(_LOG_NDTR_MEMO, y, side="right")
+    uppers = NDTRI_EXP_BOUNDS[np.minimum(upper_bound_indices, n_grids - 1)]
+    lowers = NDTRI_EXP_BOUNDS[np.maximum(0, upper_bound_indices - 1)]
+    return np.frompyfunc(_ndtri_exp_single, 3, 1)(y, lowers, uppers).astype(float)
 
 
 def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarray:
