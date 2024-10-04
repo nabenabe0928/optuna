@@ -4,16 +4,20 @@ from collections.abc import Sequence
 from typing import Any
 from typing import TYPE_CHECKING
 
+from optuna.distributions import CategoricalDistribution
 from optuna.samplers import BaseSampler
+from optuna.samplers import CmaEsSampler
+from optuna.samplers import GPSampler
+from optuna.samplers import RandomSampler
 from optuna.samplers import TPESampler
 from optuna.search_space import IntersectionSearchSpace
+from optuna.trial import TrialState
 
 
 if TYPE_CHECKING:
     from optuna.distributions import BaseDistribution
     from optuna.study import Study
     from optuna.trial import FrozenTrial
-    from optuna.trial import TrialState
 
 
 class AutoSampler(BaseSampler):
@@ -48,41 +52,70 @@ class AutoSampler(BaseSampler):
 
     def __init__(self, seed: int | None = None) -> None:
         self._seed = seed
-        self._init_search_space: dict[str, BaseDistribution] | None = None
-        self._sampler: BaseSampler = TPESampler(seed=seed)
+        self._sampler: BaseSampler = RandomSampler(seed=seed)
 
     def reseed_rng(self) -> None:
         self._sampler.reseed_rng()
 
+    def _include_conditional_param(self, study: Study) -> bool:
+        trials = study.get_trials(deepcopy=False, states=(TrialState.COMPLETE, TrialState.PRUNED))
+        if len(trials) == 0:
+            return False
+
+        param_key = set(trials[0].params)
+        for t in trials:
+            if param_key != set(t.params):
+                return True
+
+        return False
+
     def _determine_sampler(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
     ) -> None:
-        if self._init_search_space != search_space:
-            # NOTE(nabenabe): The statement above is always true for Trial#1.
-            # Under discussion. (set(self._init_search_space) == set(search_space))
-            if not isinstance(self._sampler, TPESampler):
-                self._sampler = TPESampler(seed=self._seed)
-
+        if isinstance(self._sampler, TPESampler):
             return
 
-        if ...:
-            pass
-        if trial.number > 100 and not isinstance(...):
-            pass
-        elif trial.number > 1000 and not isinstance(...):
-            pass
+        if (
+            any(isinstance(d, CategoricalDistribution) for d in search_space.values())
+            or self._include_conditional_param(study)
+        ):
+            # NOTE(nabenabe): The statement above is always true for Trial#1.
+            # Use ``TPESampler`` if search space includes conditional or categorical parameters.
+            # TBD: group=True?
+            self._sampler = TPESampler(
+                seed=self._seed, multivariate=True, warn_independent_sampling=False
+            )
+            return
+
+        if trial.number < 250:
+            # Use ``GPSampler`` if search space is numerical and n_trials <= 250.
+            if not isinstance(self._sampler, GPSampler):
+                self._sampler = GPSampler(seed=self._seed)
+            return
+
+        if not isinstance(self._sampler, CmaEsSampler):
+            # Use ``CmaEsSampler`` if search space is numerical and n_trials > 250.
+            # Warm start CMA-ES with trials up to trial.number of 249.
+            warm_start_trials = study.get_trials(
+                deepcopy=False, states=(TrialState.COMPLETE, TrialState.PRUNED)
+            )
+            self._sampler = CmaEsSampler(seed=self._seed, source_trials=warm_start_trials)
 
     def infer_relative_search_space(
         self, study: Study, trial: FrozenTrial
     ) -> dict[str, BaseDistribution]:
         search_space = IntersectionSearchSpace().calculate(study)
+        sampler_key = "auto:sampler"
         if len(search_space) == 0:
+            study._storage.set_trial_system_attr(
+                trial._trial_id, sampler_key, self._sampler.__class__.__name__
+            )
             return {}
 
-        if self._init_search_space is None:
-            self._init_search_space = search_space
-
         self._determine_sampler(study, trial, search_space)
+        study._storage.set_trial_system_attr(
+            trial._trial_id, sampler_key, self._sampler.__class__.__name__
+        )
         return self._sampler.infer_relative_search_space(study, trial)
 
     def sample_relative(
