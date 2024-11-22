@@ -42,6 +42,9 @@ else:
     prior = _LazyImport("optuna._gp.prior")
 
 
+EPS = 1e-10
+
+
 @experimental_class("3.6.0")
 class GPSampler(BaseSampler):
     """Sampler using Gaussian process-based Bayesian optimization.
@@ -151,7 +154,7 @@ class GPSampler(BaseSampler):
         constraint_vals = _warn_and_convert_inf(constraint_vals)
         means = np.mean(constraint_vals, axis=0)
         stds = np.std(constraint_vals, axis=0)
-        standardized_constraint_vals = (constraint_vals - means) / np.maximum(1e-10, stds)
+        standardized_constraint_vals = (constraint_vals - means) / np.maximum(EPS, stds)
         if self._kernel_params_cache is not None and len(
             self._kernel_params_cache.inverse_squared_lengthscales
         ) != len(internal_search_space.scale_types):
@@ -185,7 +188,7 @@ class GPSampler(BaseSampler):
                     X=normalized_params,
                     Y=vals,
                     # Since 0 is the threshold value, we use the normalized value of 0.
-                    max_Y=-mean / max(1e-10, std),
+                    max_Y=-mean / max(EPS, std),
                 )
             )
 
@@ -214,9 +217,7 @@ class GPSampler(BaseSampler):
         _sign = -1.0 if study.direction == StudyDirection.MINIMIZE else 1.0
         score_vals = np.array([_sign * cast(float, trial.value) for trial in trials])
         score_vals = _warn_and_convert_inf(score_vals)
-        standardized_score_vals = (score_vals - np.mean(score_vals)) / max(
-            1e-10, np.std(score_vals)
-        )
+        standardized_score_vals = (score_vals - np.mean(score_vals)) / max(EPS, np.std(score_vals))
 
         if self._kernel_params_cache is not None and len(
             self._kernel_params_cache.inverse_squared_lengthscales
