@@ -245,17 +245,17 @@ class GPSampler(BaseSampler):
             is_all_infeasible = not np.any(is_feasible)
             is_all_feasible = np.all(is_feasible)
 
-            # TODO(kAIto47802): If is_all_infeasible, the acquisition function for the objective
-            # function is ignored, so skipping the computation of kernel_params and acqf_params
-            # can improve speed.
-            max_Y = -np.inf if is_all_infeasible else np.max(standardized_score_vals[is_feasible])
-            best_params = (
-                None if is_all_infeasible
-                else normalized_params[np.argmax(standardized_score_vals[is_feasible]), :]
-            )
-            acqf_params_for_constraints = self._get_acqf_params_for_constraints(
-                constraint_vals, internal_search_space, normalized_params
-            )
+            if not is_all_feasible:
+                # TODO(kAIto47802): If is_all_infeasible=True, the acquisition function for the
+                # objective can be ignored. We can skip kernel_params and acqf_params computations.
+                max_Y = np.max(standardized_score_vals[is_feasible], initial=-np.inf)
+                best_params = (
+                    None if is_all_infeasible
+                    else normalized_params[np.argmax(standardized_score_vals[is_feasible]), :]
+                )
+                acqf_params_for_constraints = self._get_acqf_params_for_constraints(
+                    constraint_vals, internal_search_space, normalized_params
+                )
 
         acqf_params = acqf.create_acqf_params(
             acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
@@ -266,6 +266,7 @@ class GPSampler(BaseSampler):
             max_Y=max_Y,
         )
         if self._constraints_func is not None and not is_all_feasible:
+            # NOTE(nabenabe): If all trials are feasible, we can ignore constraints.
             acqf_params = acqf.ConstrainedAcquisitionFunctionParams.from_acqf_params(
                 acqf_params, acqf_params_for_constraints
             )
