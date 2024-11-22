@@ -239,10 +239,11 @@ class GPSampler(BaseSampler):
 
         max_Y = None
         best_params = normalized_params[np.argmax(standardized_score_vals), :]
+        is_all_feasible = True
         if self._constraints_func is not None:
-            constraint_vals, is_feasible, is_all_infeasible = _get_constraint_vals_and_feasibility(
-                study, trials
-            )
+            constraint_vals, is_feasible = _get_constraint_vals_and_feasibility(study, trials)
+            is_all_infeasible = not np.any(is_feasible)
+            is_all_feasible = np.all(is_feasible)
 
             # TODO(kAIto47802): If is_all_infeasible, the acquisition function for the objective
             # function is ignored, so skipping the computation of kernel_params and acqf_params
@@ -264,7 +265,7 @@ class GPSampler(BaseSampler):
             Y=standardized_score_vals,
             max_Y=max_Y,
         )
-        if self._constraints_func is not None:
+        if self._constraints_func is not None and not is_all_feasible:
             acqf_params = acqf.ConstrainedAcquisitionFunctionParams.from_acqf_params(
                 acqf_params, acqf_params_for_constraints
             )
@@ -315,7 +316,7 @@ def _warn_and_convert_inf(values: np.ndarray) -> np.ndarray:
 
 def _get_constraint_vals_and_feasibility(
     study: Study, trials: list[FrozenTrial]
-) -> tuple[np.ndarray, np.ndarray, bool]:
+) -> tuple[np.ndarray, np.ndarray]:
     _constraint_vals = [
         study._storage.get_trial_system_attrs(trial._trial_id).get(_CONSTRAINTS_KEY, ())
         for trial in trials
@@ -325,6 +326,4 @@ def _get_constraint_vals_and_feasibility(
     constraint_vals = np.array(_constraint_vals)
 
     is_feasible = np.all(constraint_vals <= 0, axis=1)
-    is_all_infeasible = not np.any(is_feasible)
-
-    return constraint_vals, is_feasible, is_all_infeasible
+    return constraint_vals, is_feasible
