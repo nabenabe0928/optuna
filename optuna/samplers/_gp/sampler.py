@@ -142,18 +142,16 @@ class GPSampler(BaseSampler):
         )
         return normalized_params
 
-    def _get_constraints_acqf_params(
+    def _get_acqf_params_for_constraints(
         self,
         constraint_vals: np.ndarray,
         internal_search_space: gp_search_space.SearchSpace,
         normalized_params: np.ndarray,
     ) -> list[acqf.AcquisitionFunctionParams]:
         constraint_vals = _warn_and_convert_inf(constraint_vals)
-        constraint_vals_mean = np.mean(constraint_vals, axis=0)
-        constraint_vals_std = np.std(constraint_vals, axis=0)
-        standardized_constraint_vals = (constraint_vals - constraint_vals_mean) / np.maximum(
-            1e-10, constraint_vals_std
-        )
+        means = np.mean(constraint_vals, axis=0)
+        stds = np.std(constraint_vals, axis=0)
+        standardized_constraint_vals = (constraint_vals - means) / np.maximum(1e-10, stds)
         if self._kernel_params_cache is not None and len(
             self._kernel_params_cache.inverse_squared_lengthscales
         ) != len(internal_search_space.scale_types):
@@ -161,45 +159,38 @@ class GPSampler(BaseSampler):
             self._constraints_kernel_params_cache = None
 
         constraints_kernel_params = []
-        for i, vals in enumerate(standardized_constraint_vals.T):
+        acqf_params_for_constraints = []
+        for i, (vals, mean, std) in enumerate(zip(standardized_constraint_vals.T, means, stds)):
             cache = (
                 self._constraints_kernel_params_cache and self._constraints_kernel_params_cache[i]
             )
             assert isinstance(cache, gp.KernelParamsTensor) or cache is None
-            constraints_kernel_params.append(
-                gp.fit_kernel_params(
+            kernel_params = gp.fit_kernel_params(
+                X=normalized_params,
+                Y=vals,
+                is_categorical=(
+                    internal_search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
+                ),
+                log_prior=self._log_prior,
+                minimum_noise=self._minimum_noise,
+                initial_kernel_params=cache,
+                deterministic_objective=self._deterministic,
+            )
+            constraints_kernel_params.append(kernel_params)
+            acqf_params_for_constraints.append(
+                acqf.create_acqf_params(
+                    acqf_type=acqf.AcquisitionFunctionType.LOG_PI,
+                    kernel_params=kernel_params,
+                    search_space=internal_search_space,
                     X=normalized_params,
                     Y=vals,
-                    is_categorical=(
-                        internal_search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
-                    ),
-                    log_prior=self._log_prior,
-                    minimum_noise=self._minimum_noise,
-                    initial_kernel_params=cache,
-                    deterministic_objective=self._deterministic,
+                    # Since 0 is the threshold value, we use the normalized value of 0.
+                    max_Y=-mean / max(1e-10, std),
                 )
             )
 
         self._constraints_kernel_params_cache = constraints_kernel_params
-
-        constraints_acqf_params = [
-            acqf.create_acqf_params(
-                acqf_type=acqf.AcquisitionFunctionType.LOG_PI,
-                kernel_params=params,
-                search_space=internal_search_space,
-                X=normalized_params,
-                Y=vals,
-                # Since 0 is the threshold value, we use the normalized value of 0.
-                max_Y=-mean / max(1e-10, std),
-            )
-            for params, vals, mean, std in zip(
-                constraints_kernel_params,
-                standardized_constraint_vals.T,
-                constraint_vals_mean,
-                constraint_vals_std,
-            )
-        ]
-        return constraints_acqf_params
+        return acqf_params_for_constraints
 
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
@@ -269,7 +260,7 @@ class GPSampler(BaseSampler):
                 None if is_all_infeasible
                 else normalized_params[np.argmax(standardized_score_vals[is_feasible]), :]
             )
-            acqf_params_for_constraints = self._get_constraints_acqf_params(
+            acqf_params_for_constraints = self._get_acqf_params_for_constraints(
                 constraint_vals, internal_search_space, normalized_params
             )
             acqf_params = acqf.ConstrainedAcquisitionFunctionParams.from_acqf_params(
