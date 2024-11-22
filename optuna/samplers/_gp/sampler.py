@@ -238,7 +238,7 @@ class GPSampler(BaseSampler):
         )
         self._kernel_params_cache = kernel_params
 
-        max_Y = None
+        max_Y = np.max(standardized_score_vals)
         best_params = normalized_params[np.argmax(standardized_score_vals), :]
         is_all_feasible = True
         if self._constraints_func is not None:
