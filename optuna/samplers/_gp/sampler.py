@@ -239,14 +239,6 @@ class GPSampler(BaseSampler):
 
         max_Y = None
         best_params = normalized_params[np.argmax(standardized_score_vals), :]
-        acqf_params = acqf.create_acqf_params(
-            acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
-            kernel_params=kernel_params,
-            search_space=internal_search_space,
-            X=normalized_params,
-            Y=standardized_score_vals,
-            max_Y=max_Y,
-        )
         if self._constraints_func is not None:
             constraint_vals, is_feasible, is_all_infeasible = _get_constraint_vals_and_feasibility(
                 study, trials
@@ -263,10 +255,19 @@ class GPSampler(BaseSampler):
             acqf_params_for_constraints = self._get_acqf_params_for_constraints(
                 constraint_vals, internal_search_space, normalized_params
             )
+
+        acqf_params = acqf.create_acqf_params(
+            acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
+            kernel_params=kernel_params,
+            search_space=internal_search_space,
+            X=normalized_params,
+            Y=standardized_score_vals,
+            max_Y=max_Y,
+        )
+        if self._constraints_func is not None:
             acqf_params = acqf.ConstrainedAcquisitionFunctionParams.from_acqf_params(
                 acqf_params, acqf_params_for_constraints
             )
-
         normalized_param = self._optimize_acqf(acqf_params, best_params)
         return gp_search_space.get_unnormalized_param(search_space, normalized_param)
 
