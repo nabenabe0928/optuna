@@ -96,7 +96,7 @@ def get_non_dominated_hyper_rectangle_bounds(
     upper_bound_set, _ = _get_upper_bound_set(loss_vals[on_front], ref_point)
     # Flip the sign and use upper_bound_set as the Pareto solutions. Then we can calculate the
     # lower bound set as well.
-    inf_ref_point = np.full_like(ref_point, np.inf)
-    neg_bound_set, neg_def_points = _get_upper_bound_set(-upper_bound_set, inf_ref_point)
-    ubs, lbs = -_get_hyper_rectangle_bounds(neg_def_points, neg_bound_set, inf_ref_point)
+    point_at_infinity = np.full_like(ref_point, np.inf)
+    neg_bound_set, neg_def_points = _get_upper_bound_set(-upper_bound_set, point_at_infinity)
+    ubs, lbs = -_get_hyper_rectangle_bounds(neg_def_points, neg_bound_set, point_at_infinity)
     return torch.from_numpy(lbs), torch.from_numpy(ubs)
