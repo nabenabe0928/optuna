@@ -38,6 +38,7 @@ def _get_upper_bound_set(
 
     def update(sol: np.ndarray, ubs: np.ndarray, dps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         # The update rule is written in Section 2.2 of [Lacour17].
+        # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/utils.py#L102-L161
         is_dominated = np.all(sol < ubs, axis=-1)
         if not np.any(is_dominated):
             return ubs, dps
@@ -62,8 +63,8 @@ def _get_upper_bound_set(
     upper_bound_set = np.asarray([ref_point])  # Line 1 of Alg. 2.
     def_points = np.full((1, n_objectives, n_objectives), -np.inf)  # z^k(z^r) = \hat{z}^k
     def_points[0, *np.diag_indices(n_objectives)] = ref_point  # \hat{z}^k is a dummy point.
-    for sol in loss_vals[np.argsort(loss_vals[:, 0])]:
-        upper_bound_set, def_points = update(sol, upper_bound_set, def_points)
+    for solution in loss_vals[np.argsort(loss_vals[:, 0])]:
+        upper_bound_set, def_points = update(solution, upper_bound_set, def_points)
 
     return upper_bound_set, def_points
 

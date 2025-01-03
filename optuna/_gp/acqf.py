@@ -23,6 +23,7 @@ else:
 
 
 def _sample_from_normal_sobol(dim: int, n_samples: int, seed: int | None = None) -> torch.Tensor:
+    # Ref.: https://github.com/pytorch/botorch/blob/466da73a18731d45b034bfd36011bb3eb150fdd8/botorch/sampling/qmc.py#L26
     sobol_engine = torch.quasirandom.SobolEngine(dimension=dim, scramble=True, seed=seed)
     # The Sobol sequence in [-1, 1].
     samples = 2.0 * (sobol_engine.draw(n_samples, dtype=torch.float64) - 0.5)
