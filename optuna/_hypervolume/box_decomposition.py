@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-import torch
 
 from optuna.study._multi_objective import _is_pareto_front
 
@@ -87,7 +86,7 @@ def _get_hyper_rectangle_bounds(
 
 def get_non_dominated_hyper_rectangle_bounds(
     loss_vals: np.ndarray, ref_point: np.ndarray
-) -> tuple[torch.Tensor, torch.Tensor]:  # (n_bounds, n_objectives) and (n_bounds, n_objectives)
+) -> tuple[np.ndarray, np.ndarray]:  # (n_bounds, n_objectives) and (n_bounds, n_objectives)
     # The calculation of u[k] and l[k] in the paper below:
     # [Daulton20]: https://arxiv.org/abs/2006.05078
     # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/non_dominated.py#L395-L430
@@ -99,4 +98,4 @@ def get_non_dominated_hyper_rectangle_bounds(
     point_at_infinity = np.full_like(ref_point, np.inf)
     neg_bound_set, neg_def_points = _get_upper_bound_set(-upper_bound_set, point_at_infinity)
     ubs, lbs = -_get_hyper_rectangle_bounds(neg_def_points, neg_bound_set, point_at_infinity)
-    return torch.from_numpy(lbs), torch.from_numpy(ubs)
+    return lbs, ubs
