@@ -84,7 +84,7 @@ def _get_hyper_rectangle_bounds(
     return bounds[:, not_empty]
 
 
-def get_non_dominated_hyper_rectangle_bounds(
+def _get_non_dominated_hyper_rectangle_bounds(
     loss_vals: np.ndarray, ref_point: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:  # (n_bounds, n_objectives) and (n_bounds, n_objectives)
     # The calculation of u[k] and l[k] in the paper below:
@@ -99,3 +99,73 @@ def get_non_dominated_hyper_rectangle_bounds(
     neg_bound_set, neg_def_points = _get_upper_bound_set(-upper_bound_set, point_at_infinity)
     ubs, lbs = -_get_hyper_rectangle_bounds(neg_def_points, neg_bound_set, point_at_infinity)
     return lbs, ubs
+
+
+def _get_accepted_bound_indices(
+    pareto_sols: np.ndarray, ref_point: np.ndarray, alpha: float
+) -> np.ndarray:
+    aug_pareto_sols = np.vstack(
+        [np.min(pareto_sols, axis=0) - 1, pareto_sols, np.max(pareto_sols, axis=0) + 1]
+    )
+    aug_pareto_indices = np.argsort(aug_pareto_sols, axis=0)
+    threshold = alpha * np.prod(aug_pareto_sols[-1] - aug_pareto_sols[0])
+    (n_sols, n_objectives) = aug_pareto_sols.shape
+    obj_indices = np.arange(n_objectives)
+    init_bound_indices = np.tile(np.asarray([0, n_sols - 1])[:, np.newaxis], n_objectives)
+    if pareto_sols.shape[0] == 0:
+        return init_bound_indices[..., np.newaxis, :]
+
+    stack = [init_bound_indices]
+    accepted_bound_indices = []
+    while len(stack) > 0:
+        bound_indices = stack.pop()
+        target_sol_indices = aug_pareto_indices[bound_indices, obj_indices]
+        bs = aug_pareto_sols[target_sol_indices, obj_indices]  # Upper/Lower bounds.
+        lb_non_dom, ub_non_dom = np.all(np.any(bs[:, np.newaxis] <= pareto_sols, axis=-1), axis=-1)
+        if ub_non_dom:  # Upper bound is non-dominated by all Pareto solutions.
+            accepted_bound_indices.append(target_sol_indices)
+            continue
+
+        max_idx = np.argmax(bound_indices[1] - bound_indices[0])
+        max_idx_diff = int(bound_indices[1, max_idx] - bound_indices[0, max_idx])
+        if not lb_non_dom or np.prod(bs[1] - bs[0]) <= threshold or max_idx_diff <= 1:
+            continue
+
+        new_bs = np.stack([bound_indices, bound_indices])
+        new_bs[*np.diag_indices(2), max_idx] += [max_idx_diff // 2, -((max_idx_diff + 1) // 2)]
+        stack.extend([new_bs[1], new_bs[0]])
+
+    return np.concat(np.asarray(accepted_bound_indices)[..., np.newaxis, :], axis=1)
+
+
+def _approximate_non_dominated_hyper_rectangle_bounds(
+    loss_vals: np.ndarray, ref_point: np.ndarray, alpha: float
+) -> tuple[np.ndarray, np.ndarray]:  # (n_bounds, n_objectives) and (n_bounds, n_objectives)
+    # See ``Towards Efficient Multiobjective Optimization: Multiobjective statistical criterions``.
+    def _get_sorted_pareto_sols(loss_vals: np.ndarray) -> np.ndarray:
+        unique_lexsorted_loss_vals = np.unique(loss_vals, axis=0)
+        return unique_lexsorted_loss_vals[
+            _is_pareto_front(unique_lexsorted_loss_vals, assume_unique_lexsorted=True)
+        ]
+
+    pareto_sols = _get_sorted_pareto_sols(loss_vals)
+    accepted_bound_indices = _get_accepted_bound_indices(pareto_sols, ref_point, alpha)
+    (_, n_bounds, n_objectives) = accepted_bound_indices.shape
+    aug_pareto_sols = np.vstack([np.full(n_objectives, -np.inf), pareto_sols, ref_point])
+    obj_indices = np.tile(np.arange(n_objectives), 2 * n_bounds)
+    return aug_pareto_sols[accepted_bound_indices.flatten(), obj_indices].reshape(
+        2, n_bounds, n_objectives
+    )
+
+
+def get_non_dominated_hyper_rectangle_bounds(
+    loss_vals: np.ndarray, ref_point: np.ndarray, alpha: float | None = None
+) -> tuple[np.ndarray, np.ndarray]:  # (n_bounds, n_objectives) and (n_bounds, n_objectives)
+    # The condition here follows BoTorch.
+    # https://github.com/pytorch/botorch/blob/0d5e13102ed0ddd89d767ddf89659fb2563d1d50/botorch/acquisition/multi_objective/utils.py#L55-L63
+    n_objectives = loss_vals.shape[-1]
+    if n_objectives <= 4:
+        return _get_non_dominated_hyper_rectangle_bounds(loss_vals, ref_point)
+    else:
+        alpha = alpha if alpha is not None else 10 ** (-2 if n_objectives >= 6 else -3)
+        return _approximate_non_dominated_hyper_rectangle_bounds(loss_vals, ref_point, alpha)
