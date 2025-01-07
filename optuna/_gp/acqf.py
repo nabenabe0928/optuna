@@ -44,8 +44,9 @@ def logehvi(
         non_dominated_lower_bounds: torch.Tensor,  # (n_sub_hyper_rectangles, n_objectives)
         non_dominated_upper_bounds: torch.Tensor,  # (n_sub_hyper_rectangles, n_objectives)
     ) -> torch.Tensor:  # shape = (..., )
+        # NOTE: [Daulton20] is available at https://arxiv.org/abs/2006.05078.
         # This function calculates Eq. (1) of [Daulton20].
-        # TODO(nabenabe): Adapt to Eq. (3) when we support batch optimization.
+        # TODO(nabenabe): Adapt to Eq. (3) of [Daulton20] when we support batch optimization.
         diff = torch.nn.functional.relu(
             non_dominated_upper_bounds
             - torch.maximum(loss_vals[..., torch.newaxis, :], non_dominated_lower_bounds)
