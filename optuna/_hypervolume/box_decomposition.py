@@ -11,7 +11,7 @@ def _get_upper_bound_set(
     """
     This function follows Algorithm 2 of the paper ([Lacour17]) below:
         Title: A Box Decomposition Algorithm to Compute the Hypervolume Indicator
-        Authors: Renaud Lacour, Kathrin Klamroth1, and Carlos M. Fonseca2
+        Authors: Renaud Lacour, Kathrin Klamroth, and Carlos M. Fonseca
         URL: https://arxiv.org/abs/1510.01963
 
     Args:
