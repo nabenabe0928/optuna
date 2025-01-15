@@ -23,8 +23,10 @@ else:
 
 
 def _sample_from_normal_sobol(dim: int, n_samples: int, seed: int | None = None) -> torch.Tensor:
-    # Ref.: https://github.com/pytorch/botorch/blob/466da73a18731d45b034bfd36011bb3eb150fdd8/botorch/sampling/qmc.py#L26
-    sobol_engine = torch.quasirandom.SobolEngine(dimension=dim, scramble=True, seed=seed)
+    # Ref.: https://github.com/pytorch/botorch/blob/466da73a18731d45b034bfd36011bb3eb150fdd8/botorch/sampling/qmc.py#L26  # NOQA: E501
+    sobol_engine = torch.quasirandom.SobolEngine(
+        dimension=dim, scramble=True, seed=seed
+    )  # type: ignore
     # The Sobol sequence in [-1, 1].
     samples = 2.0 * (sobol_engine.draw(n_samples, dtype=torch.float64) - 0.5)
     # Inverse transform to standard normal (values to close to 0/1 result in inf values).
@@ -51,7 +53,7 @@ def logehvi(
             non_dominated_upper_bounds
             - torch.maximum(loss_vals[..., torch.newaxis, :], non_dominated_lower_bounds)
         )
-        return torch.special.logsumexp(diff.log().sum(axis=-1), axis=-1)
+        return torch.special.logsumexp(diff.log().sum(dim=-1), dim=-1)
 
     def _logehvi(
         loss_vals: torch.Tensor,  # (..., n_qmc_samples, n_objectives)
@@ -60,7 +62,7 @@ def logehvi(
     ) -> torch.Tensor:  # shape = (..., )
         log_n_qmc_samples = float(np.log(loss_vals.shape[-2]))
         log_hvi_vals = _loghvi(loss_vals, non_dominated_lower_bounds, non_dominated_upper_bounds)
-        return -log_n_qmc_samples + torch.special.logsumexp(log_hvi_vals, axis=-1)
+        return -log_n_qmc_samples + torch.special.logsumexp(log_hvi_vals, dim=-1)
 
     # NOTE(nabenabe): By using fixed samples from the Sobol sequence, EHVI becomes deterministic,
     # making it possible to optimize the acqf by l-BFGS.

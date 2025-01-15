@@ -6,7 +6,7 @@ from optuna.study._multi_objective import _is_pareto_front
 
 
 def _get_upper_bound_set(
-    loss_vals: np.ndarray, ref_point: np.ndarray
+    sorted_pareto_sols: np.ndarray, ref_point: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     This function follows Algorithm 2 of the paper ([Lacour17]) below:
@@ -15,7 +15,7 @@ def _get_upper_bound_set(
         URL: https://arxiv.org/abs/1510.01963
 
     Args:
-        loss_vals: The loss values on which we build the partition.
+        sorted_pareto_sols: Pareto solutions sorted with respect to the first objective.
         ref_point: The reference point.
 
     Returns:
@@ -29,7 +29,7 @@ def _get_upper_bound_set(
         ``def_points`` (the shape is (n_bounds, n_objectives, n_objectives)) is not well explained
         in the paper, but basically, def_points[i, j] = z[j] of upper_bound_set[i].
     """
-    (_, n_objectives) = loss_vals.shape
+    (_, n_objectives) = sorted_pareto_sols.shape
     objective_indices = np.arange(n_objectives)
     target_filter = ~np.eye(n_objectives, dtype=bool)
     # NOTE(nabenabe): False at 0 comes from Line 2 of Alg. 2. (loss_vals is sorted w.r.t. 0-th obj)
@@ -37,7 +37,7 @@ def _get_upper_bound_set(
 
     def update(sol: np.ndarray, ubs: np.ndarray, dps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         # The update rule is written in Section 2.2 of [Lacour17].
-        # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/utils.py#L102-L161
+        # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/utils.py#L102-L161  # NOQA: E501
         is_dominated = np.all(sol < ubs, axis=-1)
         if not np.any(is_dominated):
             return ubs, dps
@@ -61,8 +61,8 @@ def _get_upper_bound_set(
 
     upper_bound_set = np.asarray([ref_point])  # Line 1 of Alg. 2.
     def_points = np.full((1, n_objectives, n_objectives), -np.inf)  # z^k(z^r) = \hat{z}^k
-    def_points[0, *np.diag_indices(n_objectives)] = ref_point  # \hat{z}^k is a dummy point.
-    for solution in loss_vals[np.argsort(loss_vals[:, 0])]:
+    def_points[0, objective_indices, objective_indices] = ref_point  # \hat{z}^k is a dummy point.
+    for solution in sorted_pareto_sols:  # NOTE(nabenabe): Sorted is necessary.
         upper_bound_set, def_points = update(solution, upper_bound_set, def_points)
 
     return upper_bound_set, def_points
@@ -72,7 +72,7 @@ def _get_hyper_rectangle_bounds(
     def_points: np.ndarray, upper_bound_set: np.ndarray, ref_point: np.ndarray
 ) -> np.ndarray:
     # Eq. (2) of [Lacour17].
-    # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/utils.py#L164-L194
+    # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/utils.py#L164-L194  # NOQA: E501
     n_objectives = upper_bound_set.shape[-1]
     bounds = np.empty((2, *upper_bound_set.shape))
     bounds[0, :, 0] = def_points[:, 0, 0]
@@ -85,14 +85,13 @@ def _get_hyper_rectangle_bounds(
 
 
 def _get_non_dominated_hyper_rectangle_bounds(
-    loss_vals: np.ndarray, ref_point: np.ndarray
+    sorted_pareto_sols: np.ndarray, ref_point: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:  # (n_bounds, n_objectives) and (n_bounds, n_objectives)
     # The calculation of u[k] and l[k] in the paper below:
     # [Daulton20]: https://arxiv.org/abs/2006.05078
-    # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/non_dominated.py#L395-L430
+    # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/non_dominated.py#L395-L430  # NOQA: E501
     # NOTE(nabenabe): The paper handles maximization problems, but we do minimization here.
-    on_front = _is_pareto_front(loss_vals, assume_unique_lexsorted=False)
-    upper_bound_set, _ = _get_upper_bound_set(loss_vals[on_front], ref_point)
+    upper_bound_set, _ = _get_upper_bound_set(sorted_pareto_sols, ref_point)
     # Flip the sign and use upper_bound_set as the Pareto solutions. Then we can calculate the
     # lower bound set as well.
     point_at_infinity = np.full_like(ref_point, np.inf)
@@ -121,7 +120,9 @@ def _get_accepted_bound_indices(
         bound_indices = stack.pop()
         target_sol_indices = aug_pareto_indices[bound_indices, obj_indices]
         bs = aug_pareto_sols[target_sol_indices, obj_indices]  # Upper/Lower bounds.
-        lb_non_dom, ub_non_dom = np.all(np.any(bs[:, np.newaxis] <= pareto_sols, axis=-1), axis=-1)
+        non_doms = np.all(np.any(bs[:, np.newaxis] <= pareto_sols, axis=-1), axis=-1)
+        assert not isinstance(non_doms, np.bool) and non_doms.shape == (2,), "MyPy Redefinition."
+        lb_non_dom, ub_non_dom = non_doms
         if ub_non_dom:  # Upper bound is non-dominated by all Pareto solutions.
             accepted_bound_indices.append(target_sol_indices)
             continue
@@ -139,16 +140,9 @@ def _get_accepted_bound_indices(
 
 
 def _approximate_non_dominated_hyper_rectangle_bounds(
-    loss_vals: np.ndarray, ref_point: np.ndarray, alpha: float
+    pareto_sols: np.ndarray, ref_point: np.ndarray, alpha: float
 ) -> tuple[np.ndarray, np.ndarray]:  # (n_bounds, n_objectives) and (n_bounds, n_objectives)
     # See ``Towards Efficient Multiobjective Optimization: Multiobjective statistical criterions``.
-    def _get_sorted_pareto_sols(loss_vals: np.ndarray) -> np.ndarray:
-        unique_lexsorted_loss_vals = np.unique(loss_vals, axis=0)
-        return unique_lexsorted_loss_vals[
-            _is_pareto_front(unique_lexsorted_loss_vals, assume_unique_lexsorted=True)
-        ]
-
-    pareto_sols = _get_sorted_pareto_sols(loss_vals)
     accepted_bound_indices = _get_accepted_bound_indices(pareto_sols, ref_point, alpha)
     (_, n_bounds, n_objectives) = accepted_bound_indices.shape
     aug_pareto_sols = np.vstack([np.full(n_objectives, -np.inf), pareto_sols, ref_point])
@@ -161,11 +155,20 @@ def _approximate_non_dominated_hyper_rectangle_bounds(
 def get_non_dominated_hyper_rectangle_bounds(
     loss_vals: np.ndarray, ref_point: np.ndarray, alpha: float | None = None
 ) -> tuple[np.ndarray, np.ndarray]:  # (n_bounds, n_objectives) and (n_bounds, n_objectives)
+    def _get_sorted_pareto_sols(loss_vals: np.ndarray) -> np.ndarray:
+        unique_lexsorted_loss_vals = np.unique(loss_vals, axis=0)
+        return unique_lexsorted_loss_vals[
+            _is_pareto_front(unique_lexsorted_loss_vals, assume_unique_lexsorted=True)
+        ]
+
+    sorted_pareto_sols = _get_sorted_pareto_sols(loss_vals)
+    n_objectives = loss_vals.shape[-1]
     # The condition here follows BoTorch.
     # https://github.com/pytorch/botorch/blob/0d5e13102ed0ddd89d767ddf89659fb2563d1d50/botorch/acquisition/multi_objective/utils.py#L55-L63
-    n_objectives = loss_vals.shape[-1]
     if n_objectives <= 4:
-        return _get_non_dominated_hyper_rectangle_bounds(loss_vals, ref_point)
+        return _get_non_dominated_hyper_rectangle_bounds(sorted_pareto_sols, ref_point)
     else:
         alpha = alpha if alpha is not None else 10 ** (-2 if n_objectives >= 6 else -3)
-        return _approximate_non_dominated_hyper_rectangle_bounds(loss_vals, ref_point, alpha)
+        return _approximate_non_dominated_hyper_rectangle_bounds(
+            sorted_pareto_sols, ref_point, alpha
+        )
