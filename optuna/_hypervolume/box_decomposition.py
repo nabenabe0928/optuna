@@ -91,7 +91,8 @@ def _get_non_dominated_hyper_rectangle_bounds(
     # [Daulton20]: https://arxiv.org/abs/2006.05078
     # Ref.: https://github.com/pytorch/botorch/blob/a0a2c0509dbbeec547a65f16cb0cb8d5b19fd7f1/botorch/utils/multi_objective/box_decompositions/non_dominated.py#L395-L430  # NOQA: E501
     # NOTE(nabenabe): The paper handles maximization problems, but we do minimization here.
-    upper_bound_set, _ = _get_upper_bound_set(sorted_pareto_sols, ref_point)
+    _upper_bound_set = _get_upper_bound_set(sorted_pareto_sols, ref_point)[0]
+    upper_bound_set = _upper_bound_set[np.argsort(_upper_bound_set[:, 0])[::-1]]
     # Flip the sign and use upper_bound_set as the Pareto solutions. Then we can calculate the
     # lower bound set as well.
     point_at_infinity = np.full_like(ref_point, np.inf)
