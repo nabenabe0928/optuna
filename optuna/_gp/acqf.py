@@ -137,9 +137,13 @@ def lcb(mean: torch.Tensor, var: torch.Tensor, beta: float) -> torch.Tensor:
 
 
 class BaseAcquisitionFunc(metaclass=ABCMeta):
-    def __init__(self, X: np.ndarray, search_space: SearchSpace) -> None:
+    def __init__(
+        self, X: np.ndarray, search_space: SearchSpace, inverse_squared_lengthscales: np.ndarray
+    ) -> None:
         self._is_categorical = torch.from_numpy(search_space.scale_types == ScaleType.CATEGORICAL)
         self._X = torch.from_numpy(X)
+        self.search_space = search_space
+        self.inverse_squared_lengthscales = inverse_squared_lengthscales
 
     @abstractmethod
     def _calculate(self, x: torch.Tensor) -> torch.Tensor:
@@ -180,7 +184,8 @@ class LogEI(BaseAcquisitionFunc):
         threshold: float | None = None,
         stabilizing_noise: float = 1e-12,
     ) -> None:
-        super().__init__(X=X, search_space=search_space)
+        inv_sq_ls = kernel_params.inverse_squared_lengthscales.detach().numpy()
+        super().__init__(X=X, search_space=search_space, inverse_squared_lengthscales=inv_sq_ls)
         cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
         self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
         self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
@@ -189,7 +194,7 @@ class LogEI(BaseAcquisitionFunc):
         self._stabilizing_noise = stabilizing_noise
 
     def _calculate(self, x: torch.Tensor) -> torch.Tensor:
-        if not np.isneginf(self._threshold):
+        if np.isneginf(self._threshold):
             # If there are no feasible trials, threshold is set to -np.inf.
             # Then we return logEI=0 to ignore the contribution from the objective.
             return torch.tensor(0.0, dtype=torch.float64)
@@ -215,7 +220,8 @@ class LogPI(BaseAcquisitionFunc):
         threshold: float | None = None,
         stabilizing_noise: float = 1e-12,
     ) -> None:
-        super().__init__(X=X, search_space=search_space)
+        inv_sq_ls = kernel_params.inverse_squared_lengthscales.detach().numpy()
+        super().__init__(X=X, search_space=search_space, inverse_squared_lengthscales=inv_sq_ls)
         cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
         self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
         self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
@@ -244,7 +250,8 @@ class UCB(BaseAcquisitionFunc):
         search_space: SearchSpace,
         beta: float,
     ) -> None:
-        super().__init__(X=X, search_space=search_space)
+        inv_sq_ls = kernel_params.inverse_squared_lengthscales.detach().numpy()
+        super().__init__(X=X, search_space=search_space, inverse_squared_lengthscales=inv_sq_ls)
         cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
         self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
         self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
@@ -272,7 +279,8 @@ class LCB(BaseAcquisitionFunc):
         search_space: SearchSpace,
         beta: float,
     ) -> None:
-        super().__init__(X=X, search_space=search_space)
+        inv_sq_ls = kernel_params.inverse_squared_lengthscales.detach().numpy()
+        super().__init__(X=X, search_space=search_space, inverse_squared_lengthscales=inv_sq_ls)
         cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
         self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
         self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
@@ -304,7 +312,10 @@ class LogEHVI(BaseAcquisitionFunc):
         seed: int | None = None,
         stabilizing_noise: float = 1e-12,
     ) -> None:
-        super().__init__(X=X, search_space=search_space)
+        inv_sq_ls = torch.mean(
+            [kp.inverse_squared_lengthscales for kp in objective_kernel_params_list], axis=0
+        ).detach().numpy()
+        super().__init__(X=X, search_space=search_space, inverse_squared_lengthscales=inv_sq_ls)
         assert len(X) == len(Y) and len(Y.shape) == 2
         loss_vals = -Y  # NOTE(nabenabe): Y is to be maximized, loss_vals is to be minimized.
         if pareto_sols is None:
@@ -360,6 +371,8 @@ class ConstrainedLogEI(BaseAcquisitionFunc):
         constraint_thresholds: list[float],
         stabilizing_noise: float = 1e-12,
     ) -> None:
+        inv_sq_ls = objective_acqf.inverse_squared_lengthscales
+        super().__init__(X=X, search_space=search_space, inverse_squared_lengthscales=inv_sq_ls)
         assert constraint_vals.shape == (X.shape[0], len(constraint_kernel_params_list))
         self._acqf_list = [objective_acqf] + [
             LogPI(kernel_params, X, c_vals, search_space, threshold, stabilizing_noise)

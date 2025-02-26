@@ -25,7 +25,7 @@ from optuna.trial import TrialState
 if TYPE_CHECKING:
     import torch
 
-    import optuna._gp.acqf as acqf
+    import optuna._gp.acqf as acqf_module
     import optuna._gp.gp as gp
     import optuna._gp.optim_mixed as optim_mixed
     import optuna._gp.prior as prior
@@ -38,7 +38,7 @@ else:
     gp_search_space = _LazyImport("optuna._gp.search_space")
     gp = _LazyImport("optuna._gp.gp")
     optim_mixed = _LazyImport("optuna._gp.optim_mixed")
-    acqf = _LazyImport("optuna._gp.acqf")
+    acqf_module = _LazyImport("optuna._gp.acqf")
     prior = _LazyImport("optuna._gp.prior")
 
 
@@ -126,15 +126,13 @@ class GPSampler(BaseSampler):
         return search_space
 
     def _optimize_acqf(
-        self,
-        acqf_params: "acqf.AcquisitionFunctionParams",
-        best_params: np.ndarray | None,
+        self, acqf: "acqf_module.BaseAcquisitionFunc", best_params: np.ndarray | None
     ) -> np.ndarray:
         # Advanced users can override this method to change the optimization algorithm.
         # However, we do not make any effort to keep backward compatibility between versions.
         # Particularly, we may remove this function in future refactoring.
         normalized_params, _acqf_val = optim_mixed.optimize_acqf_mixed(
-            acqf_params,
+            acqf,
             warmstart_normalized_params_array=(
                 None if best_params is None else best_params[None, :]
             ),
@@ -145,12 +143,13 @@ class GPSampler(BaseSampler):
         )
         return normalized_params
 
-    def _get_constraints_acqf_params(
+    def _get_constrained_acqf(
         self,
+        objective_acqf: acqf_module.LogEI | acqf_module.LogEHVI,
         constraint_vals: np.ndarray,
         internal_search_space: gp_search_space.SearchSpace,
         normalized_params: np.ndarray,
-    ) -> list[acqf.AcquisitionFunctionParams]:
+    ) -> acqf_module.ConstrainedLogEI:
         constraint_vals = _warn_and_convert_inf(constraint_vals)
         means = np.mean(constraint_vals, axis=0)
         stds = np.std(constraint_vals, axis=0)
@@ -164,6 +163,7 @@ class GPSampler(BaseSampler):
         is_categorical = internal_search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
         constraints_kernel_params = []
         constraints_acqf_params = []
+        constraint_thresholds = []
         for i, (vals, mean, std) in enumerate(zip(standardized_constraint_vals.T, means, stds)):
             cache = (
                 self._constraints_kernel_params_cache and self._constraints_kernel_params_cache[i]
@@ -181,21 +181,19 @@ class GPSampler(BaseSampler):
             )
             constraints_kernel_params.append(kernel_params)
 
-            constraints_acqf_params.append(
-                acqf.create_acqf_params(
-                    acqf_type=acqf.AcquisitionFunctionType.LOG_PI,
-                    kernel_params=kernel_params,
-                    search_space=internal_search_space,
-                    X=normalized_params,
-                    Y=vals,
-                    # Since 0 is the threshold value, we use the normalized value of 0.
-                    max_Y=-mean / max(EPS, std),
-                )
-            )
+            # Since 0 is the threshold value, we use the normalized value of 0.
+            constraint_thresholds.append(-mean / max(EPS, std))
 
         self._constraints_kernel_params_cache = constraints_kernel_params
 
-        return constraints_acqf_params
+        return ConstrainedLogEI(
+            constraint_kernel_params_list=constraints_kernel_params,
+            X=normalized_params,
+            constraint_vals=standardized_constraint_vals,
+            search_space=internal_search_space,
+            objective_acqf=objective_acqf,
+            constraint_thresholds=constraint_thresholds,
+        )
 
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
@@ -243,8 +241,7 @@ class GPSampler(BaseSampler):
 
         best_params: np.ndarray | None
         if self._constraints_func is None:
-            acqf_params = acqf.create_acqf_params(
-                acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
+            acqf = acqf_module.LogEI(
                 kernel_params=kernel_params,
                 search_space=internal_search_space,
                 X=normalized_params,
@@ -260,20 +257,18 @@ class GPSampler(BaseSampler):
             # can improve speed.
             # TODO(kAIto47802): Consider the case where all trials are feasible. We can ignore
             # constraints in this case.
-            max_Y = -np.inf if is_all_infeasible else np.max(standardized_score_vals[is_feasible])
-            acqf_params = acqf.create_acqf_params(
-                acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
+            threshold = (
+                -np.inf if is_all_infeasible else np.max(standardized_score_vals[is_feasible])
+            )
+            objective_acqf = acqf_module.LogEI(
                 kernel_params=kernel_params,
                 search_space=internal_search_space,
                 X=normalized_params,
                 Y=standardized_score_vals,
-                max_Y=max_Y,
+                threshold=threshold,
             )
-            constraints_acqf_params = self._get_constraints_acqf_params(
-                constraint_vals, internal_search_space, normalized_params
-            )
-            acqf_params = acqf.ConstrainedAcquisitionFunctionParams.from_acqf_params(
-                acqf_params, constraints_acqf_params
+            acqf = self._get_constrained_acqf(
+                objective_acqf, constraint_vals, internal_search_space, normalized_params
             )
             best_params = (
                 None
@@ -281,7 +276,7 @@ class GPSampler(BaseSampler):
                 else normalized_params[np.argmax(standardized_score_vals[is_feasible]), :]
             )
 
-        normalized_param = self._optimize_acqf(acqf_params, best_params)
+        normalized_param = self._optimize_acqf(acqf, best_params)
         return gp_search_space.get_unnormalized_param(search_space, normalized_param)
 
     def sample_independent(
