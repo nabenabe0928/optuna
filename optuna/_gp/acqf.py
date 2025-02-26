@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from abc import ABCMeta
+from abc import abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
 import math
@@ -12,6 +14,8 @@ from optuna._gp.gp import KernelParamsTensor
 from optuna._gp.gp import posterior
 from optuna._gp.search_space import ScaleType
 from optuna._gp.search_space import SearchSpace
+from optuna._hypervolume import get_non_dominated_hyper_rectangle_bounds
+from optuna.study._multi_objective import _is_pareto_front
 
 
 if TYPE_CHECKING:
@@ -132,134 +136,237 @@ def lcb(mean: torch.Tensor, var: torch.Tensor, beta: float) -> torch.Tensor:
     return mean - torch.sqrt(beta * var)
 
 
-# TODO(contramundum53): consider abstraction for acquisition functions.
-# NOTE: Acquisition function is not class on purpose to integrate numba in the future.
-class AcquisitionFunctionType(IntEnum):
-    LOG_EI = 0
-    UCB = 1
-    LCB = 2
-    LOG_PI = 3
+class BaseAcquisitionFunc(metaclass=ABCMeta):
+    def __init__(self, X: np.ndarray, search_space: SearchSpace) -> None:
+        self._is_categorical = torch.from_numpy(search_space.scale_types == ScaleType.CATEGORICAL)
+        self._X = torch.from_numpy(X)
+
+    @abstractmethod
+    def _calculate(self, x: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+    def __call__(self, x: np.ndarray, with_grad: bool) -> tuple[np.ndarray, np.ndarray | None]:
+        if with_grad:
+            assert x.ndim == 1
+            x_tensor = torch.from_numpy(x)
+            x_tensor.requires_grad_(True)
+            val = self._calculate(x_tensor)
+            val.backward()  # type: ignore
+            return val.item(), x_tensor.grad.detach().numpy()  # type: ignore
+        else:
+            with torch.no_grad():
+                return self._calculate(torch.from_numpy(x)).detach().numpy(), None
 
 
-@dataclass(frozen=True)
-class AcquisitionFunctionParams:
-    acqf_type: AcquisitionFunctionType
-    kernel_params: KernelParamsTensor
-    X: np.ndarray
-    search_space: SearchSpace
-    cov_Y_Y_inv: np.ndarray
-    cov_Y_Y_inv_Y: np.ndarray
-    # TODO(kAIto47802): Want to change the name to a generic name like threshold,
-    # since it is not actually in operation as max_Y
-    max_Y: float
-    beta: float | None
-    acqf_stabilizing_noise: float
-
-
-@dataclass(frozen=True)
-class ConstrainedAcquisitionFunctionParams(AcquisitionFunctionParams):
-    acqf_params_for_constraints: list[AcquisitionFunctionParams]
-
-    @classmethod
-    def from_acqf_params(
-        cls,
-        acqf_params: AcquisitionFunctionParams,
-        acqf_params_for_constraints: list[AcquisitionFunctionParams],
-    ) -> ConstrainedAcquisitionFunctionParams:
-        return cls(
-            acqf_type=acqf_params.acqf_type,
-            kernel_params=acqf_params.kernel_params,
-            X=acqf_params.X,
-            search_space=acqf_params.search_space,
-            cov_Y_Y_inv=acqf_params.cov_Y_Y_inv,
-            cov_Y_Y_inv_Y=acqf_params.cov_Y_Y_inv_Y,
-            max_Y=acqf_params.max_Y,
-            beta=acqf_params.beta,
-            acqf_stabilizing_noise=acqf_params.acqf_stabilizing_noise,
-            acqf_params_for_constraints=acqf_params_for_constraints,
-        )
-
-
-def create_acqf_params(
-    acqf_type: AcquisitionFunctionType,
-    kernel_params: KernelParamsTensor,
-    search_space: SearchSpace,
-    X: np.ndarray,
-    Y: np.ndarray,
-    max_Y: float | None = None,
-    beta: float | None = None,
-    acqf_stabilizing_noise: float = 1e-12,
-) -> AcquisitionFunctionParams:
+def _calculate_cov_Y_Y_inv(
+    kernel_params: KernelParamsTensor, X: np.ndarray, is_categorical: torch.Tensor
+) -> np.ndarray:
     X_tensor = torch.from_numpy(X)
-    is_categorical = torch.from_numpy(search_space.scale_types == ScaleType.CATEGORICAL)
     with torch.no_grad():
         cov_Y_Y = kernel(is_categorical, kernel_params, X_tensor, X_tensor).detach().numpy()
 
     cov_Y_Y[np.diag_indices(X.shape[0])] += kernel_params.noise_var.item()
     cov_Y_Y_inv = np.linalg.inv(cov_Y_Y)
-
-    return AcquisitionFunctionParams(
-        acqf_type=acqf_type,
-        kernel_params=kernel_params,
-        X=X,
-        search_space=search_space,
-        cov_Y_Y_inv=cov_Y_Y_inv,
-        cov_Y_Y_inv_Y=cov_Y_Y_inv @ Y,
-        max_Y=max_Y if max_Y is not None else np.max(Y),
-        beta=beta,
-        acqf_stabilizing_noise=acqf_stabilizing_noise,
-    )
+    return cov_Y_Y_inv
 
 
-def eval_acqf(acqf_params: AcquisitionFunctionParams, x: torch.Tensor) -> torch.Tensor:
-    mean, var = posterior(
-        acqf_params.kernel_params,
-        torch.from_numpy(acqf_params.X),
-        torch.from_numpy(acqf_params.search_space.scale_types == ScaleType.CATEGORICAL),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv_Y),
-        x,
-    )
+class LogEI(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        kernel_params: KernelParamsTensor,
+        X: np.ndarray,
+        Y: np.ndarray,
+        search_space: SearchSpace,
+        threshold: float | None = None,
+        stabilizing_noise: float = 1e-12,
+    ) -> None:
+        super().__init__(X=X, search_space=search_space)
+        cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
+        self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
+        self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
+        self._kernel_params = kernel_params
+        self._threshold = threshold if threshold is not None else np.max(Y)
+        self._stabilizing_noise = stabilizing_noise
 
-    if acqf_params.acqf_type == AcquisitionFunctionType.LOG_EI:
-        # If there are no feasible trials, max_Y is set to -np.inf.
-        # If max_Y is set to -np.inf, we set logEI to zero to ignore it.
-        f_val = (
-            logei(mean=mean, var=var + acqf_params.acqf_stabilizing_noise, f0=acqf_params.max_Y)
-            if not np.isneginf(acqf_params.max_Y)
-            else torch.tensor(0.0, dtype=torch.float64)
+    def _calculate(self, x: torch.Tensor) -> torch.Tensor:
+        if not np.isneginf(self._threshold):
+            # If there are no feasible trials, threshold is set to -np.inf.
+            # Then we return logEI=0 to ignore the contribution from the objective.
+            return torch.tensor(0.0, dtype=torch.float64)
+
+        mean, var = posterior(
+            kernel_params=self._kernel_params,
+            X=self._X,
+            is_categorical=self._is_categorical,
+            cov_Y_Y_inv=self._cov_Y_Y_inv,
+            cov_Y_Y_inv_Y=self._cov_Y_Y_inv_Y,
+            x=x,
         )
-    elif acqf_params.acqf_type == AcquisitionFunctionType.LOG_PI:
-        f_val = logpi(
-            mean=mean, var=var + acqf_params.acqf_stabilizing_noise, f0=acqf_params.max_Y
+        return logei(mean=mean, var=var + self._stabilizing_noise, f0=self._threshold)
+
+
+class LogPI(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        kernel_params: KernelParamsTensor,
+        X: np.ndarray,
+        Y: np.ndarray,
+        search_space: SearchSpace,
+        threshold: float | None = None,
+        stabilizing_noise: float = 1e-12,
+    ) -> None:
+        super().__init__(X=X, search_space=search_space)
+        cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
+        self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
+        self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
+        self._kernel_params = kernel_params
+        self._threshold = threshold if threshold is not None else np.max(Y)
+        self._stabilizing_noise = stabilizing_noise
+
+    def _calculate(self, x: torch.Tensor) -> torch.Tensor:
+        mean, var = posterior(
+            kernel_params=self._kernel_params,
+            X=self._X,
+            is_categorical=self._is_categorical,
+            cov_Y_Y_inv=self._cov_Y_Y_inv,
+            cov_Y_Y_inv_Y=self._cov_Y_Y_inv_Y,
+            x=x,
         )
-    elif acqf_params.acqf_type == AcquisitionFunctionType.UCB:
-        assert acqf_params.beta is not None, "beta must be given to UCB."
-        f_val = ucb(mean=mean, var=var, beta=acqf_params.beta)
-    elif acqf_params.acqf_type == AcquisitionFunctionType.LCB:
-        assert acqf_params.beta is not None, "beta must be given to LCB."
-        f_val = lcb(mean=mean, var=var, beta=acqf_params.beta)
-    else:
-        assert False, "Unknown acquisition function type."
-
-    if isinstance(acqf_params, ConstrainedAcquisitionFunctionParams):
-        c_val = sum(eval_acqf(params, x) for params in acqf_params.acqf_params_for_constraints)
-        return f_val + c_val
-    else:
-        return f_val
+        return logpi(mean=mean, var=var + self._stabilizing_noise, f0=self._threshold)
 
 
-def eval_acqf_no_grad(acqf_params: AcquisitionFunctionParams, x: np.ndarray) -> np.ndarray:
-    with torch.no_grad():
-        return eval_acqf(acqf_params, torch.from_numpy(x)).detach().numpy()
+class UCB(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        kernel_params: KernelParamsTensor,
+        X: np.ndarray,
+        Y: np.ndarray,
+        search_space: SearchSpace,
+        beta: float,
+    ) -> None:
+        super().__init__(X=X, search_space=search_space)
+        cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
+        self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
+        self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
+        self._kernel_params = kernel_params
+        self._beta = beta
+
+    def _calculate(self, x: torch.Tensor) -> torch.Tensor:
+        mean, var = posterior(
+            kernel_params=self._kernel_params,
+            X=self._X,
+            is_categorical=self._is_categorical,
+            cov_Y_Y_inv=self._cov_Y_Y_inv,
+            cov_Y_Y_inv_Y=self._cov_Y_Y_inv_Y,
+            x=x,
+        )
+        return ucb(mean=mean, var=var, beta=self._beta)
 
 
-def eval_acqf_with_grad(
-    acqf_params: AcquisitionFunctionParams, x: np.ndarray
-) -> tuple[float, np.ndarray]:
-    assert x.ndim == 1
-    x_tensor = torch.from_numpy(x)
-    x_tensor.requires_grad_(True)
-    val = eval_acqf(acqf_params, x_tensor)
-    val.backward()  # type: ignore
-    return val.item(), x_tensor.grad.detach().numpy()  # type: ignore
+class LCB(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        kernel_params: KernelParamsTensor,
+        X: np.ndarray,
+        Y: np.ndarray,
+        search_space: SearchSpace,
+        beta: float,
+    ) -> None:
+        super().__init__(X=X, search_space=search_space)
+        cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
+        self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
+        self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv @ Y)
+        self._kernel_params = kernel_params
+        self._beta = beta
+
+    def _calculate(self, x: torch.Tensor) -> torch.Tensor:
+        mean, var = posterior(
+            kernel_params=self._kernel_params,
+            X=self._X,
+            is_categorical=self._is_categorical,
+            cov_Y_Y_inv=self._cov_Y_Y_inv,
+            cov_Y_Y_inv_Y=self._cov_Y_Y_inv_Y,
+            x=x,
+        )
+        return lcb(mean=mean, var=var, beta=self._beta)
+
+
+class LogEHVI(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        objective_kernel_params_list: list[KernelParamsTensor],
+        X: np.ndarray,
+        Y: np.ndarray,
+        search_space: SearchSpace,
+        pareto_sols: np.ndarray | None = None,
+        n_qmc_samples: int = 128,
+        ref_point: np.ndarray | None = None,
+        seed: int | None = None,
+        stabilizing_noise: float = 1e-12,
+    ) -> None:
+        super().__init__(X=X, search_space=search_space)
+        assert len(X) == len(Y) and len(Y.shape) == 2
+        loss_vals = -Y  # NOTE(nabenabe): Y is to be maximized, loss_vals is to be minimized.
+        if pareto_sols is None:
+            pareto_sols = loss_vals[_is_pareto_front(loss_vals, assume_unique_lexsorted=False)]
+
+        ref_point = np.max(loss_vals, axis=0) * 1.1 if ref_point is None else ref_point
+        lbs, ubs = get_non_dominated_hyper_rectangle_bounds(pareto_sols, ref_point)
+        self._non_dominated_lower_bounds = torch.from_numpy(lbs)
+        self._non_dominated_upper_bounds = torch.from_numpy(ubs)
+        self._fixed_samples = _sample_from_normal_sobol(
+            dim=loss_vals.shape[-1], n_samples=n_qmc_samples, seed=seed
+        )
+        self._cov_Y_Y_inv_list: list[torch.Tensor] = []
+        self._cov_Y_Y_inv_Y_list: list[torch.Tensor] = []
+        self._objective_kernel_params_list = objective_kernel_params_list
+        self._stabilizing_noise = stabilizing_noise
+        for kernel_params, loss in zip(objective_kernel_params_list, loss_vals.T):
+            cov_Y_Y_inv = _calculate_cov_Y_Y_inv(kernel_params, X, self._is_categorical)
+            self._cov_Y_Y_inv_list.append(torch.from_numpy(cov_Y_Y_inv))
+            # NOTE(nabenabe): We follow minimization for multi-objective.
+            self._cov_Y_Y_inv_Y_list.append(torch.from_numpy(cov_Y_Y_inv @ loss))
+
+    def _calculate(self, x: torch.Tensor) -> torch.Tensor:
+        means_ = []
+        vars_ = []
+        for kernel_params, cov_Y_Y_inv, cov_Y_Y_inv_Y in zip(
+            self._objective_kernel_params_list, self._cov_Y_Y_inv_list, self._cov_Y_Y_inv_Y_list
+        ):
+            mean, var = posterior(
+                kernel_params, self._X, self._is_categorical, cov_Y_Y_inv, cov_Y_Y_inv_Y, x
+            )
+            means_.append(mean)
+            vars_.append(var + self._stabilizing_noise)
+
+        return logehvi(
+            means=torch.stack(means_, axis=-1),
+            cov=torch.diag_embed(torch.stack(vars_, axis=-1)),
+            fixed_samples=self._fixed_samples,
+            non_dominated_lower_bounds=self._non_dominated_lower_bounds,
+            non_dominated_upper_bounds=self._non_dominated_upper_bounds,
+            is_objective_independent=True,  # TODO(nabenabe): Introduce Multi-task GP.
+        )
+
+
+class ConstrainedLogEI(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        constraint_kernel_params_list: list[KernelParamsTensor],
+        X: np.ndarray,
+        constraint_vals: np.ndarray,
+        search_space: SearchSpace,
+        objective_acqf: LogEI | LogEHVI,
+        constraint_thresholds: list[float],
+        stabilizing_noise: float = 1e-12,
+    ) -> None:
+        assert constraint_vals.shape == (X.shape[0], len(constraint_kernel_params_list))
+        self._acqf_list = [objective_acqf] + [
+            LogPI(kernel_params, X, c_vals, search_space, threshold, stabilizing_noise)
+            for kernel_params, c_vals, threshold in zip(
+                constraint_kernel_params_list, constraint_vals.T, constraint_thresholds
+            )
+        ]
+
+    def _calculate(self, x: torch.Tensor) -> torch.Tensor:
+        return sum(acqf_._calculate(x) for acqf_ in self._acqf_list)
