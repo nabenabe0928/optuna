@@ -312,9 +312,13 @@ class LogEHVI(BaseAcquisitionFunc):
         seed: int | None = None,
         stabilizing_noise: float = 1e-12,
     ) -> None:
-        inv_sq_ls = torch.mean(
-            [kp.inverse_squared_lengthscales for kp in objective_kernel_params_list], axis=0
-        ).detach().numpy()
+        inv_sq_ls = np.mean(
+            [
+                kp.inverse_squared_lengthscales.detach().numpy()
+                for kp in objective_kernel_params_list
+            ],
+            axis=0,
+        )
         super().__init__(X=X, search_space=search_space, inverse_squared_lengthscales=inv_sq_ls)
         assert len(X) == len(Y) and len(Y.shape) == 2
         loss_vals = -Y  # NOTE(nabenabe): Y is to be maximized, loss_vals is to be minimized.

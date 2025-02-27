@@ -18,6 +18,7 @@ from optuna.samplers._base import _process_constraints_after_trial
 from optuna.samplers._base import BaseSampler
 from optuna.samplers._lazy_random_state import LazyRandomState
 from optuna.study import StudyDirection
+from optuna.study._multi_objective import _is_pareto_front
 from optuna.trial import FrozenTrial
 from optuna.trial import TrialState
 
@@ -101,7 +102,7 @@ class GPSampler(BaseSampler):
         )
         self._minimum_noise: float = prior.DEFAULT_MINIMUM_NOISE_VAR
         # We cache the kernel parameters for initial values of fitting the next time.
-        self._kernel_params_cache: "gp.KernelParamsTensor | None" = None
+        self._objectives_kernel_params_cache: "list[gp.KernelParamsTensor] | None" = None
         self._constraints_kernel_params_cache: "list[gp.KernelParamsTensor] | None" = None
         self._optimize_n_samples: int = 2048
         self._deterministic = deterministic_objective
@@ -133,9 +134,7 @@ class GPSampler(BaseSampler):
         # Particularly, we may remove this function in future refactoring.
         normalized_params, _acqf_val = optim_mixed.optimize_acqf_mixed(
             acqf,
-            warmstart_normalized_params_array=(
-                None if best_params is None else best_params[None, :]
-            ),
+            warmstart_normalized_params_array=best_params,
             n_preliminary_samples=2048,
             n_local_search=10,
             tol=1e-4,
@@ -154,8 +153,8 @@ class GPSampler(BaseSampler):
         means = np.mean(constraint_vals, axis=0)
         stds = np.std(constraint_vals, axis=0)
         standardized_constraint_vals = (constraint_vals - means) / np.maximum(EPS, stds)
-        if self._kernel_params_cache is not None and len(
-            self._kernel_params_cache.inverse_squared_lengthscales
+        if self._objectives_kernel_params_cache is not None and len(
+            self._objectives_kernel_params_cache[0].inverse_squared_lengthscales
         ) != len(internal_search_space.scale_types):
             # Clear cache if the search space changes.
             self._constraints_kernel_params_cache = None
@@ -198,8 +197,6 @@ class GPSampler(BaseSampler):
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
     ) -> dict[str, Any]:
-        self._raise_error_if_multi_objective(study)
-
         if search_space == {}:
             return {}
 
@@ -214,41 +211,60 @@ class GPSampler(BaseSampler):
             normalized_params,
         ) = gp_search_space.get_search_space_and_normalized_params(trials, search_space)
 
-        _sign = -1.0 if study.direction == StudyDirection.MINIMIZE else 1.0
-        score_vals = np.array([_sign * cast(float, trial.value) for trial in trials])
+        _signs = np.array([-1 if d == StudyDirection.MINIMIZE else 1 for d in study.directions])
+        score_vals = _signs * _warn_and_convert_inf(
+            np.array([cast(list, trial.values) for trial in trials])
+        )
+        standardized_score_vals = (
+            (score_vals - np.mean(score_vals, axis=0)) / np.maximum(EPS, np.std(score_vals, axis=0))
+        )
 
-        score_vals = _warn_and_convert_inf(score_vals)
-        standardized_score_vals = (score_vals - np.mean(score_vals)) / max(EPS, np.std(score_vals))
-
-        if self._kernel_params_cache is not None and len(
-            self._kernel_params_cache.inverse_squared_lengthscales
+        if self._objectives_kernel_params_cache is not None and len(
+            self._objectives_kernel_params_cache[0].inverse_squared_lengthscales
         ) != len(internal_search_space.scale_types):
             # Clear cache if the search space changes.
-            self._kernel_params_cache = None
+            self._objectives_kernel_params_cache = None
 
-        kernel_params = gp.fit_kernel_params(
-            X=normalized_params,
-            Y=standardized_score_vals,
-            is_categorical=(
-                internal_search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
-            ),
-            log_prior=self._log_prior,
-            minimum_noise=self._minimum_noise,
-            initial_kernel_params=self._kernel_params_cache,
-            deterministic_objective=self._deterministic,
-        )
-        self._kernel_params_cache = kernel_params
+        objectives_kernel_params = []
+        is_categorical = internal_search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
+        for i, svs in enumerate(standardized_score_vals.T):
+            cache = (
+                self._objectives_kernel_params_cache and self._objectives_kernel_params_cache[i]
+            )
+            assert isinstance(cache, gp.KernelParamsTensor) or cache is None
+            kernel_params = gp.fit_kernel_params(
+                X=normalized_params,
+                Y=svs,
+                is_categorical=is_categorical,
+                log_prior=self._log_prior,
+                minimum_noise=self._minimum_noise,
+                initial_kernel_params=cache,
+                deterministic_objective=self._deterministic,
+            )
+            objectives_kernel_params.append(kernel_params)
 
-        best_params: np.ndarray | None
-        if self._constraints_func is None:
-            acqf = acqf_module.LogEI(
-                kernel_params=kernel_params,
+        self._objectives_kernel_params_cache = objectives_kernel_params
+        if study._is_multi_objective():
+            acqf = acqf_module.LogEHVI(
+                objective_kernel_params_list=objectives_kernel_params,
                 search_space=internal_search_space,
                 X=normalized_params,
                 Y=standardized_score_vals,
+                seed=self._rng.rng.randint(1 << 31),
             )
-            best_params = normalized_params[np.argmax(standardized_score_vals), :]
         else:
+            acqf = acqf_module.LogEI(
+                kernel_params=objectives_kernel_params[0],
+                search_space=internal_search_space,
+                X=normalized_params,
+                Y=standardized_score_vals[:, 0],
+            )
+
+        best_params = normalized_params[
+            _is_pareto_front(-standardized_score_vals, assume_unique_lexsorted=False)
+        ]
+        if self._constraints_func is not None:
+            raise NotImplementedError("Not available.")
             constraint_vals, is_feasible = _get_constraint_vals_and_feasibility(study, trials)
             is_all_infeasible = not np.any(is_feasible)
 
@@ -286,7 +302,7 @@ class GPSampler(BaseSampler):
         param_name: str,
         param_distribution: BaseDistribution,
     ) -> Any:
-        self._raise_error_if_multi_objective(study)
+        # self._raise_error_if_multi_objective(study)
         return self._independent_sampler.sample_independent(
             study, trial, param_name, param_distribution
         )
@@ -314,11 +330,12 @@ def _warn_and_convert_inf(
             "GPSampler cannot handle +/-inf, so we clip them to the best/worst finite value."
         )
 
-        finite_vals = values[np.isfinite(values)]
-        best_finite_val = np.max(finite_vals, axis=0, initial=0.0)
-        worst_finite_val = np.min(finite_vals, axis=0, initial=0.0)
+        finite_vals_with_nan = np.where(np.isfinite(values), values, np.nan)
+        is_any_finite = np.any(np.isfinite(finite_vals_with_nan), axis=0)
+        best_finite_vals = np.where(is_any_finite, np.nanmax(finite_vals_with_nan, axis=0), 0.0)
+        worst_finite_vals = np.where(is_any_finite, np.nanmin(finite_vals_with_nan, axis=0), 0.0)
+        return np.clip(values, worst_finite_vals, best_finite_vals)
 
-        return np.clip(values, worst_finite_val, best_finite_val)
     return values
 
 
