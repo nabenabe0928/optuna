@@ -281,6 +281,7 @@ def optimize_acqf_mixed(
     if warmstart_normalized_params_array is None:
         warmstart_normalized_params_array = np.empty((0, dim))
 
+    warmstart_normalized_params_array = warmstart_normalized_params_array[:n_local_search - 1]
     assert (
         len(warmstart_normalized_params_array) <= n_local_search - 1
     ), "We must choose at least 1 best sampled point + given_initial_xs as start points."
