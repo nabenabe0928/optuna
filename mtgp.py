@@ -70,6 +70,15 @@ class Matern52Kernel:
         self.kernel_scale = kernel_scale or torch.tensor(1.0, dtype=torch.float64)
         self.noise_var = noise_var or torch.tensor(1.0, dtype=torch.float64)
 
+    def __str__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(\n"
+            f"    inverse_squared_lengthscales={self.inverse_squared_lengthscales},\n"
+            f"    kernel_scale={self.kernel_scale},\n"
+            f"    noise_var={self.noise_var},\n"
+            ")"
+        )
+
     def __call__(self, X1: torch.Tensor, X2: torch.Tensor) -> torch.Tensor:
         # d2(x1, x2) = sum_i d2_i(x1_i, x2_i)
         # d2_i(x1_i, x2_i) = (x1_i - x2_i) ** 2  # if x_i is continuous
@@ -176,56 +185,16 @@ class Matern52Kernel:
         )
 
 
-def posterior(
-    kernel: Matern52Kernel,
-    X: torch.Tensor,  # [len(trials), len(params)]
-    cov_Y_Y_inv: torch.Tensor,  # [len(trials), len(trials)]
-    cov_Y_Y_inv_Y: torch.Tensor,  # [len(trials)]
-    x: torch.Tensor,  # [(batch,) len(params)]
-) -> tuple[torch.Tensor, torch.Tensor]:  # (mean: [(batch,)], var: [(batch,)])
-    cov_fx_fX = kernel(x[..., None, :], X)[..., 0, :]
-    cov_fx_fx = kernel.kernel_scale
-
-    # mean = cov_fx_fX @ inv(cov_fX_fX + noise * I) @ Y
-    # var = cov_fx_fx - cov_fx_fX @ inv(cov_fX_fX + noise * I) @ cov_fx_fX.T
-    mean = cov_fx_fX @ cov_Y_Y_inv_Y  # [batch]
-    var = cov_fx_fx - (cov_fx_fX * (cov_fx_fX @ cov_Y_Y_inv)).sum(dim=-1)  # [batch]
-    # We need to clamp the variance to avoid negative values due to numerical errors.
-    return (mean, torch.clamp(var, min=0.0))
-
-
-def fit_kernel_params(
-    X: np.ndarray,
-    Y: np.ndarray,
-    is_categorical: np.ndarray,
-    log_prior: Callable[[KernelParamsTensor], torch.Tensor],
-    minimum_noise: float,
-    deterministic_objective: bool,
-    cached_kernel: Matern52Kernel | None = None,
-    gtol: float = 1e-2,
-) -> KernelParamsTensor:
-    cached_kernel = cached_kernel or Matern52Kernel(is_categorical)
-    error = None
-    # First try optimizing the kernel params with the provided initial_kernel_params,
-    # but if it fails, rerun the optimization with the default initial_kernel_params.
-    # This increases the robustness of the optimization.
-    for kernel in [cached_kernel, Matern52Kernel(is_categorical, minimum_noise=minimum_noise)]:
-        try:
-            kernel.fit(
-                X=X,
-                Y=Y,
-                log_prior=log_prior,
-                deterministic_objective=deterministic_objective,
-                gtol=gtol,
-            )
-        except RuntimeError as e:
-            error = e
-
-    logger.warning(
-        f"The optimization of kernel_params failed: \n{error}\n"
-        "The default initial kernel params will be used instead."
-    )
-    return default_initial_kernel_params
+class MultiTaskKernel:
+    # Ref: https://botorch.readthedocs.io/en/latest/_modules/botorch/models/multitask.html#MultiTaskGP
+    def __init__(
+        self,
+        is_categorical: torch.Tensor,
+        inverse_squared_lengthscales: torch.Tensor | None = None,  # (len(params), )
+        kernel_scale: torch.Tensor | None = None,  # Scalar
+        noise_var: torch.Tensor | None = None,  # Scalar
+    ) -> None:
+        pass
 
 
 if __name__ == "__main__":
@@ -242,3 +211,4 @@ if __name__ == "__main__":
         log_prior=prior.default_log_prior,
         deterministic_objective=False,
     )
+    print(kernel)
