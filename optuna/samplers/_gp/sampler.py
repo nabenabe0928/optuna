@@ -24,7 +24,7 @@ from optuna.trial import TrialState
 if TYPE_CHECKING:
     import torch
 
-    import optuna._gp.acqf as acqf
+    import optuna._gp.acqf as acqf_module
     import optuna._gp.gp as gp
     import optuna._gp.optim_mixed as optim_mixed
     import optuna._gp.prior as prior
@@ -37,7 +37,7 @@ else:
     gp_search_space = _LazyImport("optuna._gp.search_space")
     gp = _LazyImport("optuna._gp.gp")
     optim_mixed = _LazyImport("optuna._gp.optim_mixed")
-    acqf = _LazyImport("optuna._gp.acqf")
+    acqf_module = _LazyImport("optuna._gp.acqf")
     prior = _LazyImport("optuna._gp.prior")
 
 
@@ -126,14 +126,14 @@ class GPSampler(BaseSampler):
 
     def _optimize_acqf(
         self,
-        acqf_params: "acqf.AcquisitionFunctionParams",
+        acqf: "acqf_module.BaseAcquisitionFunc",
         best_params: np.ndarray | None,
     ) -> np.ndarray:
         # Advanced users can override this method to change the optimization algorithm.
         # However, we do not make any effort to keep backward compatibility between versions.
         # Particularly, we may remove this function in future refactoring.
         normalized_params, _acqf_val = optim_mixed.optimize_acqf_mixed(
-            acqf_params,
+            acqf,
             warmstart_normalized_params_array=(
                 None if best_params is None else best_params[None, :]
             ),
