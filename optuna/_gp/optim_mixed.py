@@ -177,9 +177,7 @@ def _local_search_discrete(
     if scale_type == ScaleType.CATEGORICAL or len(choices) <= MAX_INT_EXHAUSTIVE_SEARCH_PARAMS:
         return _exhaustive_search(acqf, initial_params, initial_fval, param_idx, choices)
     else:
-        return _discrete_line_search(
-            acqf, initial_params, initial_fval, param_idx, choices, xtol
-        )
+        return _discrete_line_search(acqf, initial_params, initial_fval, param_idx, choices, xtol)
 
 
 def local_search_mixed(

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from abc import ABCMeta
 from abc import abstractmethod
-from dataclasses import dataclass
-from enum import IntEnum
 import math
 from typing import TYPE_CHECKING
 
@@ -37,7 +35,7 @@ class BaseAcquisitionFunc(metaclass=ABCMeta):
     def _calculate(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
-    def eval_with_grad(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def eval_with_grad(self, x: np.ndarray) -> tuple[float, np.ndarray]:
         assert x.ndim == 1
         x_tensor = torch.from_numpy(x)
         x_tensor.requires_grad_(True)
@@ -47,7 +45,7 @@ class BaseAcquisitionFunc(metaclass=ABCMeta):
 
     def eval_with_no_grad(self, x: np.ndarray) -> np.ndarray:
         with torch.no_grad():
-            return self._calculate(torch.from_numpy(x)).detach().numpy(), None
+            return self._calculate(torch.from_numpy(x)).detach().numpy()
 
 
 def _calculate_cov_Y_Y_inv(
@@ -223,13 +221,14 @@ class ConstrainedLogEI(BaseAcquisitionFunc):
         constraint_kernel_params_list: list[KernelParamsTensor],
         X: np.ndarray,
         constraint_vals: np.ndarray,
-        search_space: SearchSpace,
         objective_acqf: LogEI,
         constraint_thresholds: list[float],
         stabilizing_noise: float = 1e-12,
     ) -> None:
-        length_scales = 1 / np.sqrt(kernel_params.inverse_squared_lengthscales.detach().numpy())
-        super().__init__(X=X, search_space=search_space, length_scales=length_scales)
+        search_space = objective_acqf.search_space
+        super().__init__(
+            X=X, search_space=search_space, length_scales=objective_acqf.length_scales
+        )
         assert constraint_vals.shape == (X.shape[0], len(constraint_kernel_params_list))
         self._acqf_list = [objective_acqf] + [
             LogPI(kernel_params, X, c_vals, search_space, threshold, stabilizing_noise)
@@ -239,4 +238,6 @@ class ConstrainedLogEI(BaseAcquisitionFunc):
         ]
 
     def _calculate(self, x: torch.Tensor) -> torch.Tensor:
-        return sum(acqf_._calculate(x) for acqf_ in self._acqf_list)
+        res = sum(acqf_._calculate(x) for acqf_ in self._acqf_list)
+        assert isinstance(res, torch.Tensor), "MyPy Redefinition."
+        return res
