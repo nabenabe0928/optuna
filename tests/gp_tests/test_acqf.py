@@ -11,7 +11,7 @@ from optuna._gp.search_space import SearchSpace
 
 
 @pytest.mark.parametrize(
-    "acqf_type", [acqf_module.LogEI, acqf_module.UCB, acqf_module.LCB, acqf_module.LogPI]
+    "acqf_cls", [acqf_module.LogEI, acqf_module.UCB, acqf_module.LCB, acqf_module.LogPI]
 )
 @pytest.mark.parametrize(
     "x", [np.array([0.15, 0.12]), np.array([[0.15, 0.12], [0.0, 1.0]])]  # unbatched  # batched
