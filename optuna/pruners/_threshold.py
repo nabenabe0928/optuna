@@ -92,8 +92,8 @@ class ThresholdPruner(BasePruner):
         if upper is not None:
             upper = _check_value(upper)
 
-        lower = lower if lower is not None else -float("inf")
-        upper = upper if upper is not None else float("inf")
+        lower = lower or -float("inf")
+        upper = upper or float("inf")
 
         if lower > upper:
             raise ValueError("lower should be smaller than upper.")

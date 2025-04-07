@@ -50,7 +50,7 @@ class SPXCrossover(BaseCrossover):
         G = np.mean(parents_params, axis=0)  # Equation (1).
         rs = np.power(rng.rand(n), 1 / (np.arange(n) + 1))  # Equation (2).
 
-        epsilon = np.sqrt(len(search_space_bounds) + 2) if self._epsilon is None else self._epsilon
+        epsilon = self._epsilon or np.sqrt(len(search_space_bounds) + 2)
         xks = [G + epsilon * (pk - G) for pk in parents_params]  # Equation (3).
 
         ck = 0  # Equation (4).

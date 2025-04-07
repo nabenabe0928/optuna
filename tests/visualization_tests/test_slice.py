@@ -160,7 +160,7 @@ def test_get_slice_plot_info_non_exist_param_error() -> None:
 )
 def test_get_slice_plot_info_params(params: list[str] | None) -> None:
     study = prepare_study_with_trials()
-    params = ["param_a", "param_b", "param_c", "param_d"] if params is None else params
+    params = params or ["param_a", "param_b", "param_c", "param_d"]
     expected_subplot_infos = {
         "param_a": _SliceSubplotInfo(
             param_name="param_a",

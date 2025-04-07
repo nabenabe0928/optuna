@@ -218,7 +218,7 @@ def test_retry_failed_trial_callback_intermediate(
 def test_fail_stale_trials(grace_period: int | None) -> None:
     storage_mode = "sqlite"
     heartbeat_interval = 1
-    _grace_period = (heartbeat_interval * 2) if grace_period is None else grace_period
+    _grace_period = grace_period or (heartbeat_interval * 2)
 
     def failed_trial_callback(study: "optuna.Study", trial: FrozenTrial) -> None:
         assert study._storage.get_study_system_attrs(study._study_id)["test"] == "A"

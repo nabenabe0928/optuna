@@ -103,7 +103,7 @@ def deprecated_func(
             """
 
             message = _DEPRECATION_WARNING_TEMPLATE.format(
-                name=(name if name is not None else func.__name__),
+                name=(name or func.__name__),
                 d_ver=deprecated_version,
                 r_ver=removed_version,
             )
@@ -164,7 +164,7 @@ def deprecated_class(
             @functools.wraps(_original_init)
             def wrapped_init(self: Any, *args: Any, **kwargs: Any) -> None:
                 message = _DEPRECATION_WARNING_TEMPLATE.format(
-                    name=(name if name is not None else _original_name),
+                    name=(name or _original_name),
                     d_ver=deprecated_version,
                     r_ver=removed_version,
                 )

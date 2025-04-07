@@ -72,10 +72,8 @@ def experimental_func(
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> FT:
             warnings.warn(
-                "{} is experimental (supported from v{}). "
-                "The interface can change in the future.".format(
-                    name if name is not None else func.__name__, version
-                ),
+                f"{name or func.__name__} is experimental (supported from v{version}). "
+                "The interface can change in the future.",
                 ExperimentalWarning,
                 stacklevel=2,
             )
@@ -112,10 +110,8 @@ def experimental_class(
             @functools.wraps(_original_init)
             def wrapped_init(self: Any, *args: Any, **kwargs: Any) -> None:
                 warnings.warn(
-                    "{} is experimental (supported from v{}). "
-                    "The interface can change in the future.".format(
-                        name if name is not None else _original_name, version
-                    ),
+                    f"{name or _original_name} is experimental (supported from v{version}). "
+                    "The interface can change in the future.",
                     ExperimentalWarning,
                     stacklevel=2,
                 )

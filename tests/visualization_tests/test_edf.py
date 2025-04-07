@@ -109,7 +109,7 @@ def test_plot_edf_with_target_name(plot_edf: Callable[..., Any], target_name: st
     else:
         figure = plot_edf(study, target_name=target_name)
 
-    expected = target_name if target_name is not None else "Objective Value"
+    expected = target_name or "Objective Value"
     if isinstance(figure, go.Figure):
         assert figure.layout.xaxis.title.text == expected
     elif isinstance(figure, Axes):

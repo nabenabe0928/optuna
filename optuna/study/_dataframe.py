@@ -53,7 +53,7 @@ def _create_records_and_aggregate_column(
             elif attr == "values":
                 # Expand trial.values.
                 # trial.values should be None when the trial's state is FAIL or PRUNED.
-                trial_values = [None] * len(study.directions) if value is None else value
+                trial_values = value or [None] * len(study.directions)
                 iterator = (
                     enumerate(trial_values)
                     if metric_names is None

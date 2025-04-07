@@ -139,7 +139,7 @@ def get_search_space_and_normalized_params(
                 ),
             )
             scale_types[i] = ScaleType.LOG if distribution.log else ScaleType.LINEAR
-            steps[i] = 0.0 if distribution.step is None else distribution.step
+            steps[i] = distribution.step or 0.0
             bounds[i, :] = (distribution.low, distribution.high)
 
             values[:, i] = normalize_one_param(
@@ -168,7 +168,7 @@ def get_unnormalized_param(
                 ),
             )
             scale_type = ScaleType.LOG if distribution.log else ScaleType.LINEAR
-            step = 0.0 if distribution.step is None else distribution.step
+            step = distribution.step or 0.0
             bounds = (distribution.low, distribution.high)
             param_value = float(
                 np.clip(
