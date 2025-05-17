@@ -95,6 +95,10 @@ class GPSampler(BaseSampler):
     def __init__(
         self,
         *,
+        tpe_ref_point: bool,
+        stable_relu: bool,
+        stable_mininimum: bool,
+        use_best_params: bool,
         seed: int | None = None,
         independent_sampler: BaseSampler | None = None,
         n_startup_trials: int = 10,
@@ -113,6 +117,10 @@ class GPSampler(BaseSampler):
         self._constraints_kernel_params_cache: list[gp.KernelParamsTensor] | None = None
         self._deterministic = deterministic_objective
         self._constraints_func = constraints_func
+        self._stable_relu = stable_relu
+        self._stable_mininimum = stable_mininimum
+        self._use_best_params = use_best_params
+        self._tpe_ref_point = tpe_ref_point
 
         if constraints_func is not None:
             warn_experimental_argument("constraints_func")
@@ -290,15 +298,21 @@ class GPSampler(BaseSampler):
                     Y=standardized_score_vals,
                     n_qmc_samples=128,  # NOTE(nabenabe): The BoTorch default value.
                     qmc_seed=self._rng.rng.randint(1 << 30),
+                    stable_relu=self._stable_relu,
+                    stable_mininimum=self._stable_mininimum,
+                    tpe_ref_point=self._tpe_ref_point,
                 )
-                pareto_params = normalized_params[
-                    _is_pareto_front(-standardized_score_vals, assume_unique_lexsorted=False)
-                ]
-                n_pareto_sols = len(pareto_params)
-                # TODO(nabenabe): Verify the validity of this choice.
-                size = min(self._n_local_search // 2, n_pareto_sols)
-                chosen_indices = self._rng.rng.choice(n_pareto_sols, size=size, replace=False)
-                best_params = pareto_params[chosen_indices]
+                if self._use_best_params:
+                    pareto_params = normalized_params[
+                        _is_pareto_front(-standardized_score_vals, assume_unique_lexsorted=False)
+                    ]
+                    n_pareto_sols = len(pareto_params)
+                    # TODO(nabenabe): Verify the validity of this choice.
+                    size = min(self._n_local_search // 2, n_pareto_sols)
+                    chosen_indices = self._rng.rng.choice(n_pareto_sols, size=size, replace=False)
+                    best_params = pareto_params[chosen_indices]
+                else:
+                    best_params = None
         else:
             assert (
                 n_objectives == len(kernel_params_list) == 1

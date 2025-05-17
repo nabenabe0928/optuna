@@ -36,10 +36,38 @@ def _sample_from_normal_sobol(dim: int, n_samples: int, seed: int | None) -> tor
     return torch.erfinv(samples) * float(np.sqrt(2))
 
 
+def log_smooth_relu(x: torch.Tensor) -> torch.Tensor:
+    # tau = 1e-6 is the default value in BoTorch.
+    # https://github.com/pytorch/botorch/blob/v0.13.0/botorch/acquisition/multi_objective/logei.py#L301
+    tau = 1e-6
+    # alpha = 1e-1 is the default value in BoTorch.
+    # https://github.com/pytorch/botorch/blob/v0.14.0/botorch/utils/safe_math.py#L297
+    alpha = 1e-1
+    z = x / tau
+    return tau * (alpha / (1.0 + z**2) + torch.nn.functional.softplus(z))
+
+
+def fatminimum(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    # tau = 1e-2 is the default value in BoTorch.
+    # https://github.com/pytorch/botorch/blob/v0.13.0/botorch/acquisition/multi_objective/logei.py#L305
+    tau = 1e-2
+
+    def _fatmin(x: torch.Tensor, dim: int) -> torch.Tensor:
+        min_val = x.amin(dim=dim, keepdim=True)
+        diff = min_val - x
+        diff = diff.masked_fill(diff.isnan(), 0.0)
+        z = -diff / tau
+        return min_val.squeeze(dim) - tau * (1.0 / (1.0 + z + 0.5 * z**2)).sum(dim=dim).log()
+
+    return _fatmin(torch.stack(torch.broadcast_tensors(a, b), dim=-1), dim=-1, tau=tau)
+
+
 def logehvi(
     Y_post: torch.Tensor,  # (..., n_qmc_samples, n_objectives)
     non_dominated_box_lower_bounds: torch.Tensor,  # (n_boxes, n_objectives)
     non_dominated_box_upper_bounds: torch.Tensor,  # (n_boxes, n_objectives)
+    stable_mininimum: bool,
+    stable_relu: bool,
 ) -> torch.Tensor:  # (..., )
     log_n_qmc_samples = float(np.log(Y_post.shape[-2]))
     # This function calculates Eq. (1) of https://arxiv.org/abs/2006.05078.
@@ -49,15 +77,24 @@ def logehvi(
     # Check the implementations here:
     # https://github.com/pytorch/botorch/blob/v0.13.0/botorch/utils/safe_math.py
     # https://github.com/pytorch/botorch/blob/v0.13.0/botorch/acquisition/multi_objective/logei.py#L146-L266
-    _EPS = torch.tensor(1e-12, dtype=torch.float64)  # NOTE(nabenabe): grad becomes nan when EPS=0.
-    diff = torch.maximum(
-        _EPS,
-        torch.minimum(Y_post[..., torch.newaxis, :], non_dominated_box_upper_bounds)
-        - non_dominated_box_lower_bounds,
-    )
+    if stable_relu:
+        _log_diff = log_smooth_relu(Y_post[..., torch.newaxis, :] - non_dominated_box_lower_bounds)
+    else:
+        # NOTE(nabenabe): grad becomes nan when EPS=0.
+        _EPS = torch.tensor(1e-12, dtype=torch.float64)
+        _log_diff = torch.maximum(
+            _EPS, Y_post[..., torch.newaxis, :] - non_dominated_box_lower_bounds
+        ).log()
+
+    log_box_lengths = (non_dominated_box_upper_bounds - non_dominated_box_lower_bounds).log()
+    if stable_mininimum:
+        log_diff = fatminimum(_log_diff, log_box_lengths)
+    else:
+        log_diff = torch.minimum(_log_diff, log_box_lengths)
+
     # NOTE(nabenabe): logsumexp with dim=-1 is for the HVI calculation and that with dim=-2 is for
     # expectation of the HVIs over the fixed_samples.
-    return torch.special.logsumexp(diff.log().sum(dim=-1), dim=(-2, -1)) - log_n_qmc_samples
+    return torch.special.logsumexp(log_diff.sum(dim=-1), dim=(-2, -1)) - log_n_qmc_samples
 
 
 def standard_logei(z: torch.Tensor) -> torch.Tensor:
@@ -162,6 +199,8 @@ class MultiObjectiveAcquisitionFunctionParams(AcquisitionFunctionParams):
     non_dominated_box_lower_bounds: torch.Tensor
     non_dominated_box_upper_bounds: torch.Tensor
     fixed_samples: torch.Tensor
+    stable_mininimum: bool
+    stable_relu: bool
 
     @classmethod
     def from_acqf_params(
@@ -170,12 +209,20 @@ class MultiObjectiveAcquisitionFunctionParams(AcquisitionFunctionParams):
         Y: np.ndarray,
         n_qmc_samples: int,
         qmc_seed: int | None,
+        stable_mininimum: bool,
+        stable_relu: bool,
+        tpe_ref_point: bool,
     ) -> MultiObjectiveAcquisitionFunctionParams:
         def _get_non_dominated_box_bounds() -> tuple[torch.Tensor, torch.Tensor]:
             loss_vals = -Y  # NOTE(nabenabe): Y is to be maximized, loss_vals is to be minimized.
             pareto_sols = loss_vals[_is_pareto_front(loss_vals, assume_unique_lexsorted=False)]
             ref_point = np.max(loss_vals, axis=0)
-            ref_point = np.nextafter(np.maximum(1.1 * ref_point, 0.9 * ref_point), np.inf)
+            if tpe_ref_point:
+                ref_point = np.nextafter(np.maximum(1.1 * ref_point, 0.9 * ref_point), np.inf)
+            else:
+                # https://github.com/optuna/optuna-integration/blob/v4.3.0/optuna_integration/botorch/botorch.py#L433
+                ref_point = ref_point + 1e-8
+
             lbs, ubs = get_non_dominated_box_bounds(pareto_sols, ref_point)
             # NOTE(nabenabe): Flip back the sign to make them compatible with maximization.
             return torch.from_numpy(-ubs), torch.from_numpy(-lbs)
@@ -220,6 +267,8 @@ class MultiObjectiveAcquisitionFunctionParams(AcquisitionFunctionParams):
             cov_Y_Y_inv_Y=np.empty(0),
             max_Y=np.nan,
             beta=None,
+            stable_mininimum=stable_mininimum,
+            stable_relu=stable_relu,
         )
 
 
@@ -286,6 +335,8 @@ def _eval_ehvi(
         Y_post=torch.stack(Y_post, dim=-1),
         non_dominated_box_lower_bounds=ehvi_acqf_params.non_dominated_box_lower_bounds,
         non_dominated_box_upper_bounds=ehvi_acqf_params.non_dominated_box_upper_bounds,
+        stable_mininimum=ehvi_acqf_params.stable_mininimum,
+        stable_relu=ehvi_acqf_params.stable_relu,
     )
 
 
