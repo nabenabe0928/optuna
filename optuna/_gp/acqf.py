@@ -59,7 +59,7 @@ def fatminimum(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         z = -diff / tau
         return min_val.squeeze(dim) - tau * (1.0 / (1.0 + z + 0.5 * z**2)).sum(dim=dim).log()
 
-    return _fatmin(torch.stack(torch.broadcast_tensors(a, b), dim=-1), dim=-1, tau=tau)
+    return _fatmin(torch.stack(torch.broadcast_tensors(a, b), dim=-1), dim=-1)
 
 
 def logehvi(
