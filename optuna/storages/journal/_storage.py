@@ -320,7 +320,7 @@ class JournalStorage(BaseStorage):
             log["datetime_complete"] = datetime.datetime.now().isoformat(timespec="microseconds")
 
         with self._thread_lock:
-            # NOTE(nabenabe): Sync with lock to check whether there are any trials added after 
+            # NOTE(nabenabe): Sync with lock to check whether there are any trials added after
             # this thread called ``get_all_trials``.
             self._sync_with_backend()
             # NOTE(nabenabe): ``trial`` with ``trial_id`` may already exist when using
