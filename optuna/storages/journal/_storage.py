@@ -320,18 +320,18 @@ class JournalStorage(BaseStorage):
             log["datetime_complete"] = datetime.datetime.now().isoformat(timespec="microseconds")
 
         with self._thread_lock:
-            # NOTE(nabenabe): Sync with lock to check whether there are any trials added after
-            # this thread called ``get_all_trials``.
-            self._sync_with_backend()
-            # NOTE(nabenabe): ``trial`` with ``trial_id`` may already exist when using
-            # ``enqueue_trial`` and ``GrpcProxyStorage`` as we cannot guarantee different thread
-            # IDs for each process.
-            existing_trial = self._replay_result._trials.get(trial_id)
-            if existing_trial is not None and state == existing_trial.state == TrialState.RUNNING:
-                # NOTE(nabenabe): If another process is already evaluating the ``trial`` with
-                # ``trial_id``, this ``trial`` cannot be updated by the new request of
-                # ``GrpcProxyStorage``.
-                return False
+            if state == TrialState.RUNNING:
+                # NOTE(nabenabe): Sync with lock to check whether there are any trials added after
+                # this thread called ``get_all_trials``. ``trial`` with ``trial_id`` may already
+                # exist when using ``enqueue_trial`` and ``GrpcProxyStorage`` as we cannot
+                # guarantee different thread IDs for each process.
+                self._sync_with_backend()
+                existing_trial = self._replay_result._trials.get(trial_id)
+                if existing_trial is not None:
+                    # NOTE(nabenabe): If another process is already evaluating the ``trial`` with
+                    # ``trial_id``, this ``trial`` cannot be updated by the new request of
+                    # ``GrpcProxyStorage``.
+                    return False
 
             self._write_log(JournalOperation.SET_TRIAL_STATE_VALUES, log)
             self._sync_with_backend()
