@@ -327,7 +327,7 @@ class JournalStorage(BaseStorage):
                 # guarantee different thread IDs for each process.
                 self._sync_with_backend()
                 existing_trial = self._replay_result._trials.get(trial_id)
-                if existing_trial is not None:
+                if existing_trial is not None and existing_trial.state == TrialState.RUNNING:
                     # NOTE(nabenabe): If another process is already evaluating the ``trial`` with
                     # ``trial_id``, this ``trial`` cannot be updated by the new request of
                     # ``GrpcProxyStorage``.
