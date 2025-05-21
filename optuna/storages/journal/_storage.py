@@ -615,7 +615,7 @@ class JournalStorageReplayResult:
             return
 
         state = TrialState(log["state"])
-        if state == self._trials[trial_id].state == TrialState.RUNNING:
+        if state == self._trials[trial_id].state and state == TrialState.RUNNING:
             # Reject the operation as the popped trial is already run by another process.
             return
 
