@@ -320,6 +320,13 @@ class JournalStorage(BaseStorage):
             log["datetime_complete"] = datetime.datetime.now().isoformat(timespec="microseconds")
 
         with self._thread_lock:
+            if state == TrialState.RUNNING:
+                self._sync_with_backend()
+                existing_trial = self._replay_result._trials.get(trial_id)
+                if existing_trial is not None and existing_trial.state != TrialState.WAITING:
+                    if existing_trial.state.is_finished():
+                        raise UpdateFinishedTrialError("Dummy Message.")
+                    return False
             self._write_log(JournalOperation.SET_TRIAL_STATE_VALUES, log)
             self._sync_with_backend()
 
