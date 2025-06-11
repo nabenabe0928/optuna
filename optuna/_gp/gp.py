@@ -19,7 +19,6 @@ is_categorical:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 from typing import Any
 from typing import TYPE_CHECKING
@@ -205,7 +204,7 @@ class GaussianProcessRegressor:
             loss.backward()  # type: ignore
             # scipy.minimize requires all the gradients to be zero for termination.
             grad = raw_params_tensor.grad.detach().numpy()
-            raw_noise_var_grad = grad[n_params + 1]  # type: ignore
+            raw_noise_var_grad = grad[self._n_params + 1]  # type: ignore
             assert not deterministic_objective or raw_noise_var_grad == 0
         self._disable_grad()
         return loss.item(), grad  # type: ignore
@@ -256,7 +255,7 @@ def fit_gp_regressor(
     deterministic_objective: bool,
     last_gp_regressor: GaussianProcessRegressor | None = None,
     gtol: float = 1e-2,
-) -> KernelParamsTensor:
+) -> GaussianProcessRegressor:
     error = None
     # First try optimizing the kernel params with the provided initial_kernel_params,
     # but if it fails, rerun the optimization with the default initial_kernel_params.

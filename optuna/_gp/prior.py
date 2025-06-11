@@ -28,8 +28,8 @@ def default_log_prior(gp_reg: gp.GaussianProcessRegressor) -> torch.Tensor:
     # TODO(contramundum53): Check whether these priors are appropriate.
     return (
         -(
-            0.1 / self._inverse_squared_lengthscales + 0.1 * self._inverse_squared_lengthscales
+            0.1 / gp_reg._inverse_squared_lengthscales + 0.1 * gp_reg._inverse_squared_lengthscales
         ).sum()
-        + gamma_log_prior(self._kernel_scale, 2, 1)
-        + gamma_log_prior(self._noise_var, 1.1, 30)
+        + gamma_log_prior(gp_reg._kernel_scale, 2, 1)
+        + gamma_log_prior(gp_reg._noise_var, 1.1, 30)
     )
