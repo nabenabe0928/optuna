@@ -288,6 +288,7 @@ class LogEHVI(BaseAcquisitionFunc):
         Y_post = []
         for i, gpr in enumerate(self.gprs_list):
             mean, var = gpr.posterior(
+                # TODO(nabenabe): FIXFIXFIXFIX. (cov_Y_Y_inv for each objective).
                 self.X, self.is_categorical, self.cov_Y_Y_inv, self.cov_Y_Y_inv_Y, x
             )
             stdev = torch.sqrt(var + self.acqf_stabilizing_noise)
