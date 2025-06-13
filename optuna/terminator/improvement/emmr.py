@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     import scipy.stats as scipy_stats
     import torch
 
-    from optuna._gp import acqf
+    from optuna._gp import acqf as acqf_module
     from optuna._gp import gp
     from optuna._gp import prior
     from optuna._gp import search_space as gp_search_space
@@ -31,7 +31,7 @@ else:
 
     torch = _LazyImport("torch")
     gp = _LazyImport("optuna._gp.gp")
-    acqf = _LazyImport("optuna._gp.acqf")
+    acqf_module = _LazyImport("optuna._gp.acqf")
     prior = _LazyImport("optuna._gp.prior")
     gp_search_space = _LazyImport("optuna._gp.search_space")
     scipy_stats = _LazyImport("scipy.stats")
@@ -280,20 +280,17 @@ def _compute_gp_posterior(
     gpr: gp.GPRegressor,
 ) -> tuple[float, float]:  # mean, var
 
-    acqf_params = acqf.create_acqf_params(
-        acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
+    acqf = acqf_module.LogEI(
         gpr=gpr,
         search_space=search_space,
         X=X,  # normalized_params[..., :-1, :],
         Y=Y,  # standarized_score_vals[:-1],
     )
-    mean_tensor, var_tensor = acqf_params.gpr.posterior(
-        torch.from_numpy(acqf_params.X),
-        torch.from_numpy(
-            acqf_params.search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
-        ),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv_Y),
+    mean_tensor, var_tensor = acqf.gpr.posterior(
+        acqf.X,
+        acqf.is_categorical,
+        acqf.cov_Y_Y_inv,
+        acqf.cov_Y_Y_inv_Y,
         torch.from_numpy(x_params),  # best_params or normalized_params[..., -1, :]),
     )
     mean = mean_tensor.detach().numpy().flatten()
@@ -357,23 +354,13 @@ def _compute_gp_posterior_cov_two_thetas(
 
     assert normalized_params.shape[0] == standarized_score_vals.shape[0]
 
-    acqf_params = acqf.create_acqf_params(
-        acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
-        gpr=gpr,
-        search_space=search_space,
-        X=normalized_params,
-        Y=standarized_score_vals,
+    acqf = acqf_module.LogEI(
+        gpr=gpr, search_space=search_space, X=normalized_params, Y=standarized_score_vals
     )
 
+    theta = torch.from_numpy(normalized_params[[theta1_index, theta2_index]])
     _, var = _posterior_of_batched_theta(
-        acqf_params.gpr,
-        torch.from_numpy(acqf_params.X),
-        torch.from_numpy(
-            acqf_params.search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
-        ),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv_Y),
-        torch.from_numpy(normalized_params[[theta1_index, theta2_index]]),
+        acqf.gpr, acqf.X, acqf.is_categorical, acqf.cov_Y_Y_inv, acqf.cov_Y_Y_inv_Y, theta
     )
     assert var.shape == (2, 2)
     var = var.detach().numpy()[0, 1]
