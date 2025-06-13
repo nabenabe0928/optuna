@@ -172,7 +172,7 @@ class LogEI(BaseAcquisitionFunc):
         return (
             logei(mean=mean, var=var + self.acqf_stabilizing_noise, f0=self.max_Y)
             if not np.isneginf(self.max_Y)
-            else torch.tensor(0.0, dtype=torch.float64)
+            else torch.zeros(size=x.shape[:-1], dtype=torch.float64)
         )
 
 
