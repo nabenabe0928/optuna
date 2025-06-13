@@ -35,6 +35,7 @@ def X() -> np.ndarray:
 @pytest.fixture
 def gpr() -> GPRegressor:
     return GPRegressor(
+        is_categorical=torch.tensor([False, False]),
         inverse_squared_lengthscales=torch.tensor([2.0, 3.0], dtype=torch.float64),
         kernel_scale=torch.tensor(4.0, dtype=torch.float64),
         noise_var=torch.tensor(0.1, dtype=torch.float64),
@@ -49,6 +50,12 @@ def search_space() -> SearchSpace:
         bounds=np.array([[0.0, 1.0] * n_dims]),
         steps=np.zeros(n_dims),
     )
+
+
+def pseudo_fit(gpr: GPRegressor, X: np.ndarray, Y: np.ndarray) -> None:
+    gpr.X_train = torch.from_numpy(X)
+    gpr.Y_train = torch.from_numpy(Y)
+    gpr._proc_after_fit()
 
 
 parametrized_x = pytest.mark.parametrize(
@@ -85,6 +92,7 @@ def test_eval_acqf(
     X: np.ndarray,
 ) -> None:
     Y = np.array([1.0, 2.0, 3.0])
+    pseudo_fit(gpr, X, Y)
     acqf_params = create_acqf_params(
         acqf_type=acqf_type,
         gpr=gpr,
@@ -108,6 +116,7 @@ def test_eval_acqf_with_constraints(
 ) -> None:
     c = additional_values.copy()
     Y = np.array([1.0, 2.0, 3.0])
+    pseudo_fit(gpr, X, Y)
     is_feasible = np.all(c <= 0, axis=1)
     is_all_infeasible = not np.any(is_feasible)
     acqf_params = create_acqf_params(
@@ -150,6 +159,7 @@ def test_eval_multi_objective_acqf(
     n_objectives = Y.shape[-1]
     acqf_params_for_objectives = []
     for i in range(n_objectives):
+        pseudo_fit(gpr, X, Y[:, i])
         acqf_params_for_objectives.append(
             create_acqf_params(
                 AcquisitionFunctionType.LOG_EHVI,
