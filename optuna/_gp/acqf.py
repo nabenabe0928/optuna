@@ -89,22 +89,6 @@ def logei(mean: torch.Tensor, var: torch.Tensor, f0: float) -> torch.Tensor:
     return val
 
 
-def logpi(mean: torch.Tensor, var: torch.Tensor, f0: float) -> torch.Tensor:
-    # Return the integral of N(mean, var) from -inf to f0
-    # This is identical to the integral of N(0, 1) from -inf to (f0-mean)/sigma
-    # Return E_{y ~ N(mean, var)}[bool(y <= f0)]
-    sigma = torch.sqrt(var)
-    return torch.special.log_ndtr((f0 - mean) / sigma)
-
-
-def ucb(mean: torch.Tensor, var: torch.Tensor, beta: float) -> torch.Tensor:
-    return mean + torch.sqrt(beta * var)
-
-
-def lcb(mean: torch.Tensor, var: torch.Tensor, beta: float) -> torch.Tensor:
-    return mean - torch.sqrt(beta * var)
-
-
 class BaseAcquisitionFunc(ABC):
     def __init__(self, length_scales: np.ndarray, search_space: SearchSpace) -> None:
         self.length_scales = length_scales
@@ -173,8 +157,12 @@ class LogPI(BaseAcquisitionFunc):
         super().__init__(gpr.length_scales, search_space)
 
     def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        # Return the integral of N(mean, var) from -inf to f0
+        # This is identical to the integral of N(0, 1) from -inf to (f0-mean)/sigma
+        # Return E_{y ~ N(mean, var)}[bool(y <= f0)]
         mean, var = self._gpr.posterior(x)
-        return logpi(mean=mean, var=var + self._stabilizing_noise, f0=self._threshold)
+        sigma = torch.sqrt(var + self._stabilizing_noise)
+        return torch.special.log_ndtr((self._threshold - mean) / sigma)
 
 
 class UCB(BaseAcquisitionFunc):
@@ -190,7 +178,7 @@ class UCB(BaseAcquisitionFunc):
 
     def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
         mean, var = self._gpr.posterior(x)
-        return ucb(mean=mean, var=var, beta=self._beta)
+        return mean + torch.sqrt(self._beta * var)
 
 
 class LCB(BaseAcquisitionFunc):
@@ -206,7 +194,7 @@ class LCB(BaseAcquisitionFunc):
 
     def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
         mean, var = self._gpr.posterior(x)
-        return lcb(mean=mean, var=var, beta=self._beta)
+        return mean - torch.sqrt(self._beta * var)
 
 
 class ConstrainedLogEI(BaseAcquisitionFunc):
