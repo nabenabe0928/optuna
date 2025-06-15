@@ -272,7 +272,7 @@ class GPRegressor:
         minimum_noise: float,
         deterministic_objective: bool,
         gtol: float = 1e-2,
-    ) -> None:
+    ) -> "GPRegressor":
         """
         First try optimizing the kernel params with the provided kernel parameters in cache, but if
         it fails, rerun the optimization with the default kernel parameters for the robustness.
@@ -282,7 +282,7 @@ class GPRegressor:
         for _ in range(2):
             try:
                 self._fit_kernel_params(log_prior, minimum_noise, deterministic_objective, gtol)
-                return
+                return self
             except RuntimeError as e:
                 error = e
                 self._update_kernel_params(KernelParamsTensor(default_kernel_params.clone()))
@@ -293,3 +293,4 @@ class GPRegressor:
         )
         self._update_kernel_params(KernelParamsTensor(default_kernel_params.clone()))
         self._cache_matrix()
+        return self

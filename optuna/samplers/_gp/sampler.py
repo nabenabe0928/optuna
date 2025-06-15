@@ -208,17 +208,6 @@ class GPSampler(BaseSampler):
         )
         return normalized_params
 
-    def _train_gp_regressor(
-        self,
-        is_categorical: torch.Tensor,
-        X_train: torch.Tensor,
-        y_train: torch.Tensor,
-        cache: torch.Tensor | None,
-    ) -> gp.GPRegressor:
-        gpr = gp.GPRegressor(is_categorical, X_train, y_train, kernel_params=cache)
-        gpr.fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
-        return gpr
-
     def _get_constraints_acqf_args(
         self, is_categorical: torch.Tensor, X_train: torch.Tensor, constraint_vals: np.ndarray
     ) -> tuple[list[gp.GPRegressor], list[float]]:
@@ -233,7 +222,9 @@ class GPSampler(BaseSampler):
             else self._constraints_kernel_params_cache_list
         )
         constraints_gpr_list = [
-            self._train_gp_regressor(is_categorical, X_train, C_train[:, i], cache=_cache_list[i])
+            gp.GPRegressor(
+                is_categorical, X_train, C_train[:, i], _cache_list[i]
+            ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
             for i in range(n_constraints)
         ]
         self._constraints_kernel_params_cache_list = [
@@ -262,6 +253,29 @@ class GPSampler(BaseSampler):
 
         return gp_search_space, X_train, Y_train
 
+    def _get_warmstart_indices(
+        self, X_train: torch.Tensor, Y_train: torch.Tensor, constraint_vals: np.ndarray | None
+    ) -> int | np.ndarray | None:
+        if constraint_vals is None:
+            if Y_train.shape[-1] == 1:
+                best_idx = Y_train[:, 0].numpy().argmax()
+                return int(best_idx)
+            else:
+                on_front = _is_pareto_front(-Y_train.numpy(), assume_unique_lexsorted=False)
+                n_pareto_sols = np.count_nonzero(on_front)
+                # TODO(nabenabe): Verify the validity of this choice.
+                size = min(self._n_local_search // 2, n_pareto_sols)
+                chosen_indices = self._rng.rng.choice(n_pareto_sols, size=size, replace=False)
+                best_indices = np.arange(len(Y_train))[on_front][chosen_indices]
+                return best_indices
+
+        is_feasible = np.all(constraint_vals <= 0, axis=1)
+        if not any(is_feasible):
+            return None
+
+        Y_train_with_neginf = np.where(is_feasible, Y_train[:, 0].numpy(), -np.inf)
+        return int(np.argmax(Y_train_with_neginf).item())
+
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
     ) -> dict[str, Any]:
@@ -289,16 +303,23 @@ class GPSampler(BaseSampler):
             else self._kernel_params_cache_list
         )
         gpr_list = [
-            self._train_gp_regressor(is_categorical, X_train, Y_train[:, i], cache=_cache_list[i])
+            gp.GPRegressor(
+                is_categorical, X_train, Y_train[:, i], _cache_list[i]
+            ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
             for i in range(n_objectives)
         ]
         self._kernel_params_cache_list = [gpr.kernel_params.clone() for gpr in gpr_list]
+        constraint_vals = (
+            None if self._constraints_func is None else _get_constraint_vals(study, trials)
+        )
+        warmstart_indices = self._get_warmstart_indices(X_train, Y_train, constraint_vals)
         best_params: np.ndarray | None
         acqf: acqf_module.BaseAcquisitionFunc
         if self._constraints_func is None:
             if n_objectives == 1:
                 assert len(gpr_list) == 1
-                best_idx = int(Y_train[:, 0].argmax().item())
+                assert isinstance(warmstart_indices, int)
+                best_idx = int(warmstart_indices)
                 threshold = Y_train[best_idx, 0].item()
                 acqf = acqf_module.LogEI(gpr_list[0], gp_search_space, threshold=threshold)
                 best_params = X_train[best_idx, None].numpy()
@@ -310,17 +331,13 @@ class GPSampler(BaseSampler):
                     n_qmc_samples=128,  # NOTE(nabenabe): The BoTorch default value.
                     qmc_seed=self._rng.rng.randint(1 << 30),
                 )
-                pareto_params = X_train[
-                    _is_pareto_front(-Y_train.numpy(), assume_unique_lexsorted=False)
-                ].numpy()
-                n_pareto_sols = len(pareto_params)
-                # TODO(nabenabe): Verify the validity of this choice.
-                size = min(self._n_local_search // 2, n_pareto_sols)
-                chosen_indices = self._rng.rng.choice(n_pareto_sols, size=size, replace=False)
-                best_params = pareto_params[chosen_indices]
+                assert isinstance(warmstart_indices, np.ndarray) and len(warmstart_indices) >= 1
+                best_params = X_train[warmstart_indices].numpy()
         else:
             assert n_objectives == len(gpr_list) == 1, "Multi-objective has not been supported."
-            constraint_vals, is_feasible = _get_constraint_vals_and_feasibility(study, trials)
+            assert isinstance(warmstart_indices, int) or warmstart_indices is None
+            best_idx = None if warmstart_indices is None else int(warmstart_indices)
+            best_params = None if best_idx is None else X_train[best_idx, None].numpy()
             constraints_gpr_list, constraints_threshold_list = self._get_constraints_acqf_args(
                 is_categorical, X_train, constraint_vals
             )
@@ -329,16 +346,12 @@ class GPSampler(BaseSampler):
             # can improve speed.
             # TODO(kAIto47802): Consider the case where all trials are feasible. We can ignore
             # constraints in this case.
-            Y_train_neginf = np.where(is_feasible, Y_train[:, 0].numpy(), -np.inf)
             acqf = acqf_module.ConstrainedLogEI(
                 gpr=gpr_list[0],
                 search_space=gp_search_space,
-                threshold=np.max(Y_train_neginf).item(),
+                threshold=-np.inf if best_idx is None else Y_train[best_idx, 0].item(),
                 constraints_gpr_list=constraints_gpr_list,
                 constraints_threshold_list=constraints_threshold_list,
-            )
-            best_params = (
-                None if not any(is_feasible) else X_train[np.argmax(Y_train_neginf), None].numpy()
             )
 
         normalized_param = self._optimize_acqf(acqf, best_params)
@@ -370,9 +383,7 @@ class GPSampler(BaseSampler):
         self._independent_sampler.after_trial(study, trial, state, values)
 
 
-def _get_constraint_vals_and_feasibility(
-    study: Study, trials: list[FrozenTrial]
-) -> tuple[np.ndarray, np.ndarray]:
+def _get_constraint_vals(study: Study, trials: list[FrozenTrial]) -> np.ndarray:
     _constraint_vals = [
         study._storage.get_trial_system_attrs(trial._trial_id).get(_CONSTRAINTS_KEY, ())
         for trial in trials
@@ -382,6 +393,4 @@ def _get_constraint_vals_and_feasibility(
 
     constraint_vals = np.array(_constraint_vals)
     assert len(constraint_vals.shape) == 2, "constraint_vals must be a 2d array."
-    is_feasible = np.all(constraint_vals <= 0, axis=1)
-    assert not isinstance(is_feasible, np.bool_), "MyPy Redefinition for NumPy v2.2.0."
-    return constraint_vals, is_feasible
+    return constraint_vals
