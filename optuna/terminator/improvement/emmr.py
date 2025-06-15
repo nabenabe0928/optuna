@@ -156,7 +156,7 @@ class EMMREvaluator(BaseImprovementEvaluator):
         )
         gpr_t1 = gp.GPRegressor(  # Fit kernel with up to (t-1)-th observation
             X_train=torch.from_numpy(normalized_params[..., :-1, :]),
-            Y_train=torch.from_numpy(standarized_score_vals[:-1]),
+            y_train=torch.from_numpy(standarized_score_vals[:-1]),
             is_categorical=is_categorical,
             kernel_params=None,
         )
@@ -166,7 +166,7 @@ class EMMREvaluator(BaseImprovementEvaluator):
 
         gpr_t = gp.GPRegressor(  # Fit kernel with up to t-th observation
             X_train=torch.from_numpy(normalized_params),
-            Y_train=torch.from_numpy(standarized_score_vals),
+            y_train=torch.from_numpy(standarized_score_vals),
             is_categorical=is_categorical,
             kernel_params=gpr_t1.kernel_params.clone(),
         )
@@ -314,9 +314,9 @@ def _posterior_of_batched_theta(
     assert cov_Y_Y_inv.shape == (len_trials, len_trials)
     assert cov_Y_Y_inv_Y.shape == (len_trials,)
 
-    cov_ftheta_fX = gpr.kernel(theta[..., None, :], X)[..., 0, :]
+    cov_ftheta_fX = gpr._kernel(theta[..., None, :], X)[..., 0, :]
     assert cov_ftheta_fX.shape == (len_batch, len_trials)
-    cov_ftheta_ftheta = gpr.kernel(theta[..., None, :], theta)[..., 0, :]
+    cov_ftheta_ftheta = gpr._kernel(theta[..., None, :], theta)[..., 0, :]
     assert cov_ftheta_ftheta.shape == (len_batch, len_batch)
 
     assert torch.allclose(cov_ftheta_ftheta.diag(), gpr.kernel_params.kernel_scale)
@@ -359,12 +359,12 @@ def _compute_gp_posterior_cov_two_thetas(
         Y=standarized_score_vals,
     )
 
-    assert acqf_params.gpr.cov_Y_Y_inv is not None and acqf_params.gpr.cov_Y_Y_inv_Y is not None
+    assert acqf_params.gpr._cov_Y_Y_inv is not None and acqf_params.gpr._cov_Y_Y_inv_Y is not None
     _, var = _posterior_of_batched_theta(
         acqf_params.gpr,
-        acqf_params.gpr.X_train,
-        acqf_params.gpr.cov_Y_Y_inv,
-        acqf_params.gpr.cov_Y_Y_inv_Y,
+        acqf_params.gpr._X_train,
+        acqf_params.gpr._cov_Y_Y_inv,
+        acqf_params.gpr._cov_Y_Y_inv_Y,
         torch.from_numpy(normalized_params[[theta1_index, theta2_index]]),
     )
     assert var.shape == (2, 2)

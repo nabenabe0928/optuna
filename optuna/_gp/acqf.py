@@ -118,7 +118,6 @@ class AcquisitionFunctionType(IntEnum):
 class AcquisitionFunctionParams:
     acqf_type: AcquisitionFunctionType
     gpr: GPRegressor
-    X: np.ndarray
     search_space: SearchSpace
     # TODO(kAIto47802): Want to change the name to a generic name like threshold,
     # since it is not actually in operation as max_Y
@@ -140,7 +139,6 @@ class ConstrainedAcquisitionFunctionParams(AcquisitionFunctionParams):
         return cls(
             acqf_type=acqf_params.acqf_type,
             gpr=acqf_params.gpr,
-            X=acqf_params.X,
             search_space=acqf_params.search_space,
             max_Y=acqf_params.max_Y,
             beta=acqf_params.beta,
@@ -193,12 +191,11 @@ class MultiObjectiveAcquisitionFunctionParams(AcquisitionFunctionParams):
             # Any other parameters will not be used anywhere.
             is_categorical=torch.empty(0),
             X_train=torch.empty(0),
-            Y_train=torch.empty(0),
+            y_train=torch.empty(0),
         )
         repr_acqf_params = acqf_params_for_objectives[0]
         return cls(
             acqf_type=AcquisitionFunctionType.LOG_EHVI,
-            X=repr_acqf_params.X,
             search_space=repr_acqf_params.search_space,
             acqf_stabilizing_noise=repr_acqf_params.acqf_stabilizing_noise,
             acqf_params_for_objectives=acqf_params_for_objectives,
@@ -225,7 +222,6 @@ def create_acqf_params(
     return AcquisitionFunctionParams(
         acqf_type=acqf_type,
         gpr=gpr,
-        X=X,
         search_space=search_space,
         max_Y=max_Y if max_Y is not None else np.max(Y),
         beta=beta,
