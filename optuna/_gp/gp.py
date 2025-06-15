@@ -163,7 +163,7 @@ class GPRegressor:
 
         cov_Y_Y[np.diag_indices(self._X_train.shape[0])] += self.kernel_params.noise_var.item()
         cov_Y_Y_inv = np.linalg.inv(cov_Y_Y)
-        cov_Y_Y_inv_Y = cov_Y_Y_inv @ self._y_train.detach().numpy()
+        cov_Y_Y_inv_Y = cov_Y_Y_inv @ self._y_train.numpy()
         # NOTE(nabenabe): Here we use NumPy to guarantee the reproducibility from the past.
         self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
         self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv_Y)
