@@ -232,7 +232,7 @@ class LogEHVI(BaseAcquisitionFunc):
     ) -> None:
         def _get_non_dominated_box_bounds() -> tuple[torch.Tensor, torch.Tensor]:
             # NOTE(nabenabe): Y is to be maximized, loss_vals is to be minimized.
-            loss_vals = -Y_train.detach().numpy()
+            loss_vals = -Y_train.numpy()
             pareto_sols = loss_vals[_is_pareto_front(loss_vals, assume_unique_lexsorted=False)]
             ref_point = np.max(loss_vals, axis=0)
             ref_point = np.nextafter(np.maximum(1.1 * ref_point, 0.9 * ref_point), np.inf)

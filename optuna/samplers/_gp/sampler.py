@@ -209,37 +209,72 @@ class GPSampler(BaseSampler):
         return normalized_params
 
     def _get_constraints_acqf_args(
-        self,
-        constraint_vals: np.ndarray,
-        gp_search_space: search_space_module.SearchSpace,
-        normalized_params: np.ndarray,
+        self, is_categorical: torch.Tensor, X_train: torch.Tensor, constraint_vals: np.ndarray
     ) -> tuple[list[gp.GPRegressor], list[float]]:
         standardized_constraint_vals, means, stds = _standardize_values(constraint_vals)
-        is_categorical = torch.from_numpy(
-            gp_search_space.scale_types == search_space_module.ScaleType.CATEGORICAL
+        C_train = torch.from_numpy(standardized_constraint_vals)
+        # Threshold for each sontraint is at c==0.
+        constraints_threshold_list = (-means / np.maximum(EPS, stds)).tolist()
+        n_constraints = C_train.shape[-1]
+        _cache_list = (
+            [None] * n_constraints
+            if self._constraints_kernel_params_cache_list is None
+            else self._constraints_kernel_params_cache_list
         )
-        constraints_gpr_list = []
-        constraints_threshold_list = []
-        for i, (vals, mean, std) in enumerate(zip(standardized_constraint_vals.T, means, stds)):
-            cache = (
-                self._constraints_kernel_params_cache_list[i]
-                if self._constraints_kernel_params_cache_list is not None
-                else None
-            )
-            gpr = gp.GPRegressor(
-                is_categorical,
-                X_train=torch.from_numpy(normalized_params),
-                y_train=torch.from_numpy(vals),
-                kernel_params=cache,
-            )
-            gpr.fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
-            constraints_gpr_list.append(gpr)
-            constraints_threshold_list.append(-mean / max(EPS, std))
-
+        constraints_gpr_list = [
+            gp.GPRegressor(
+                is_categorical, X_train, C_train[:, i], _cache_list[i]
+            ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
+            for i in range(n_constraints)
+        ]
         self._constraints_kernel_params_cache_list = [
             gpr.kernel_params.clone() for gpr in constraints_gpr_list
         ]
         return constraints_gpr_list, constraints_threshold_list
+
+    def _preproc(
+        self, study: Study, trials: list[FrozenTrial], search_space: dict[str, BaseDistribution]
+    ) -> tuple[search_space_module.SearchSpace, torch.Tensor, torch.Tensor]:
+        (gp_search_space, normalized_params) = (
+            search_space_module.get_search_space_and_normalized_params(trials, search_space)
+        )
+        _sign = np.array([-1.0 if d == StudyDirection.MINIMIZE else 1.0 for d in study.directions])
+        standardized_score_vals, _, _ = _standardize_values(
+            _sign * np.array([trial.values for trial in trials])
+        )
+        X_train = torch.from_numpy(normalized_params)
+        Y_train = torch.from_numpy(standardized_score_vals)
+        if self._kernel_params_cache_list is not None and len(
+            self._kernel_params_cache_list[0]
+        ) - 2 != len(gp_search_space.scale_types):
+            # Clear cache if the search space changes.
+            self._kernel_params_cache_list = None
+            self._constraints_kernel_params_cache_list = None
+
+        return gp_search_space, X_train, Y_train
+
+    def _get_warmstart_indices(
+        self, X_train: torch.Tensor, Y_train: torch.Tensor, constraint_vals: np.ndarray | None
+    ) -> int | np.ndarray | None:
+        if constraint_vals is None:
+            if Y_train.shape[-1] == 1:
+                best_idx = Y_train[:, 0].numpy().argmax()
+                return int(best_idx)
+            else:
+                on_front = _is_pareto_front(-Y_train.numpy(), assume_unique_lexsorted=False)
+                n_pareto_sols = np.count_nonzero(on_front)
+                # TODO(nabenabe): Verify the validity of this choice.
+                size = min(self._n_local_search // 2, n_pareto_sols)
+                chosen_indices = self._rng.rng.choice(n_pareto_sols, size=size, replace=False)
+                best_indices = np.arange(len(Y_train))[on_front][chosen_indices]
+                return best_indices
+
+        is_feasible = np.all(constraint_vals <= 0, axis=1)
+        if not any(is_feasible):
+            return None
+
+        Y_train_with_neginf = np.where(is_feasible, Y_train[:, 0].numpy(), -np.inf)
+        return int(np.argmax(Y_train_with_neginf).item())
 
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
@@ -254,99 +289,69 @@ class GPSampler(BaseSampler):
 
         states = (TrialState.COMPLETE,)
         trials = study._get_trials(deepcopy=False, states=states, use_cache=True)
-
         if len(trials) < self._n_startup_trials:
             return {}
 
-        (gp_search_space, normalized_params) = (
-            search_space_module.get_search_space_and_normalized_params(trials, search_space)
-        )
-
-        _sign = np.array([-1.0 if d == StudyDirection.MINIMIZE else 1.0 for d in study.directions])
-        standardized_score_vals, _, _ = _standardize_values(
-            _sign * np.array([trial.values for trial in trials])
-        )
-
-        if self._kernel_params_cache_list is not None and len(
-            self._kernel_params_cache_list[0]
-        ) - 2 != len(gp_search_space.scale_types):
-            # Clear cache if the search space changes.
-            self._kernel_params_cache_list = None
-            self._constraints_kernel_params_cache_list = None
-
-        gpr_list = []
-        n_objectives = standardized_score_vals.shape[-1]
+        gp_search_space, X_train, Y_train = self._preproc(study, trials, search_space)
         is_categorical = torch.from_numpy(
             gp_search_space.scale_types == search_space_module.ScaleType.CATEGORICAL
         )
-        for i in range(n_objectives):
-            cache = (
-                self._kernel_params_cache_list[i]
-                if self._kernel_params_cache_list is not None
-                else None
-            )
-            gpr = gp.GPRegressor(
-                is_categorical,
-                X_train=torch.from_numpy(normalized_params),
-                y_train=torch.from_numpy(standardized_score_vals[:, i]),
-                kernel_params=cache,
-            )
-            gpr.fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
-            gpr_list.append(gpr)
+        n_objectives = Y_train.shape[-1]
+        _cache_list = (
+            [None] * n_objectives
+            if self._kernel_params_cache_list is None
+            else self._kernel_params_cache_list
+        )
+        gpr_list = [
+            gp.GPRegressor(
+                is_categorical, X_train, Y_train[:, i], _cache_list[i]
+            ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
+            for i in range(n_objectives)
+        ]
         self._kernel_params_cache_list = [gpr.kernel_params.clone() for gpr in gpr_list]
+        constraint_vals = (
+            None if self._constraints_func is None else _get_constraint_vals(study, trials)
+        )
+        warmstart_indices = self._get_warmstart_indices(X_train, Y_train, constraint_vals)
         best_params: np.ndarray | None
         acqf: acqf_module.BaseAcquisitionFunc
         if self._constraints_func is None:
             if n_objectives == 1:
                 assert len(gpr_list) == 1
-                acqf = acqf_module.LogEI(
-                    gpr=gpr_list[0],
-                    search_space=gp_search_space,
-                    threshold=np.max(standardized_score_vals[:, 0]),
-                )
-                best_params = normalized_params[np.argmax(standardized_score_vals), np.newaxis]
+                assert isinstance(warmstart_indices, int)
+                best_idx = int(warmstart_indices)
+                threshold = Y_train[best_idx, 0].item()
+                acqf = acqf_module.LogEI(gpr_list[0], gp_search_space, threshold=threshold)
+                best_params = X_train[best_idx, None].numpy()
             else:
                 acqf = acqf_module.LogEHVI(
                     gpr_list=gpr_list,
                     search_space=gp_search_space,
-                    Y_train=torch.from_numpy(standardized_score_vals),
+                    Y_train=Y_train,
                     n_qmc_samples=128,  # NOTE(nabenabe): The BoTorch default value.
                     qmc_seed=self._rng.rng.randint(1 << 30),
                 )
-                pareto_params = normalized_params[
-                    _is_pareto_front(-standardized_score_vals, assume_unique_lexsorted=False)
-                ]
-                n_pareto_sols = len(pareto_params)
-                # TODO(nabenabe): Verify the validity of this choice.
-                size = min(self._n_local_search // 2, n_pareto_sols)
-                chosen_indices = self._rng.rng.choice(n_pareto_sols, size=size, replace=False)
-                best_params = pareto_params[chosen_indices]
+                assert isinstance(warmstart_indices, np.ndarray) and len(warmstart_indices) >= 1
+                best_params = X_train[warmstart_indices].numpy()
         else:
             assert n_objectives == len(gpr_list) == 1, "Multi-objective has not been supported."
-            constraint_vals, is_feasible = _get_constraint_vals_and_feasibility(study, trials)
-            is_all_infeasible = not np.any(is_feasible)
+            assert isinstance(warmstart_indices, int) or warmstart_indices is None
+            best_idx = None if warmstart_indices is None else int(warmstart_indices)
+            best_params = None if best_idx is None else X_train[best_idx, None].numpy()
             constraints_gpr_list, constraints_threshold_list = self._get_constraints_acqf_args(
-                constraint_vals, gp_search_space, normalized_params
+                is_categorical, X_train, constraint_vals
             )
-            # TODO(kAIto47802): If is_all_infeasible, the acquisition function for the objective
+            # TODO(kAIto47802): If all infeasible, the acquisition function for the objective
             # function is ignored, so skipping the computation of gpr and acqf_params
             # can improve speed.
             # TODO(kAIto47802): Consider the case where all trials are feasible. We can ignore
             # constraints in this case.
-            threshold = (
-                -np.inf if is_all_infeasible else np.max(standardized_score_vals[is_feasible])
-            )
             acqf = acqf_module.ConstrainedLogEI(
                 gpr=gpr_list[0],
                 search_space=gp_search_space,
-                threshold=threshold,
+                threshold=-np.inf if best_idx is None else Y_train[best_idx, 0].item(),
                 constraints_gpr_list=constraints_gpr_list,
                 constraints_threshold_list=constraints_threshold_list,
-            )
-            best_params = (
-                None
-                if is_all_infeasible
-                else normalized_params[np.argmax(standardized_score_vals[is_feasible]), np.newaxis]
             )
 
         normalized_param = self._optimize_acqf(acqf, best_params)
@@ -378,9 +383,7 @@ class GPSampler(BaseSampler):
         self._independent_sampler.after_trial(study, trial, state, values)
 
 
-def _get_constraint_vals_and_feasibility(
-    study: Study, trials: list[FrozenTrial]
-) -> tuple[np.ndarray, np.ndarray]:
+def _get_constraint_vals(study: Study, trials: list[FrozenTrial]) -> np.ndarray:
     _constraint_vals = [
         study._storage.get_trial_system_attrs(trial._trial_id).get(_CONSTRAINTS_KEY, ())
         for trial in trials
@@ -390,6 +393,4 @@ def _get_constraint_vals_and_feasibility(
 
     constraint_vals = np.array(_constraint_vals)
     assert len(constraint_vals.shape) == 2, "constraint_vals must be a 2d array."
-    is_feasible = np.all(constraint_vals <= 0, axis=1)
-    assert not isinstance(is_feasible, np.bool_), "MyPy Redefinition for NumPy v2.2.0."
-    return constraint_vals, is_feasible
+    return constraint_vals
