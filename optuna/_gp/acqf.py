@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from abc import ABC
+from abc import abstractmethod
 from dataclasses import dataclass
 from enum import IntEnum
 import math
@@ -102,6 +104,188 @@ def ucb(mean: torch.Tensor, var: torch.Tensor, beta: float) -> torch.Tensor:
 
 def lcb(mean: torch.Tensor, var: torch.Tensor, beta: float) -> torch.Tensor:
     return mean - torch.sqrt(beta * var)
+
+
+class BaseAcquisitionFunc(ABC):
+    def __init__(self, length_scales: np.ndarray) -> None:
+        self._length_scales = length_scales
+
+    @property
+    def length_scales(self) -> np.ndarray:
+        return self._length_scales
+
+    @abstractmethod
+    def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+    def eval_acqf_no_grad(self, x: np.ndarray) -> np.ndarray:
+        with torch.no_grad():
+            return self.eval_acqf(torch.from_numpy(x)).detach().numpy()
+
+    def eval_acqf_with_grad(self, x: np.ndarray) -> tuple[float, np.ndarray]:
+        assert x.ndim == 1
+        x_tensor = torch.from_numpy(x).requires_grad_(True)
+        val = self.eval_acqf(x_tensor)
+        val.backward()  # type: ignore
+        return val.item(), x_tensor.grad.detach().numpy()  # type: ignore
+
+
+class LogEI(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        gpr: GPRegressor,
+        search_space: SearchSpace,
+        threshold: float,
+        stabilizing_noise: float = 1e-12,
+    ) -> None:
+        self._gpr = gpr
+        self.search_space = search_space
+        self._stabilizing_noise = stabilizing_noise
+        self._threshold = threshold
+        super().__init__(gpr.length_scales)
+
+    def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        mean, var = self._gpr.posterior(x)
+        # If there are no feasible trials, max_Y is set to -np.inf.
+        # If max_Y is set to -np.inf, we set logEI to zero to ignore it.
+        return (
+            logei(mean=mean, var=var + self._stabilizing_noise, f0=self._threshold)
+            if not np.isneginf(self._threshold)
+            else torch.zeros(x.shape[:-1], dtype=torch.float64)
+        )
+
+
+class LogPI(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        gpr: GPRegressor,
+        search_space: SearchSpace,
+        threshold: float,
+        stabilizing_noise: float = 1e-12,
+    ) -> None:
+        self._gpr = gpr
+        self.search_space = search_space
+        self._stabilizing_noise = stabilizing_noise
+        self._threshold = threshold
+        super().__init__(gpr.length_scales)
+
+    def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        mean, var = self._gpr.posterior(x)
+        return logpi(mean=mean, var=var + self._stabilizing_noise, f0=self._threshold)
+
+
+class UCB(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        gpr: GPRegressor,
+        search_space: SearchSpace,
+        beta: float,
+    ) -> None:
+        self._gpr = gpr
+        self.search_space = search_space
+        self._beta = beta
+        super().__init__(gpr.length_scales)
+
+    def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        mean, var = self._gpr.posterior(x)
+        return ucb(mean=mean, var=var, beta=self._beta)
+
+
+class LCB(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        gpr: GPRegressor,
+        search_space: SearchSpace,
+        beta: float,
+    ) -> None:
+        self._gpr = gpr
+        self.search_space = search_space
+        self._beta = beta
+        super().__init__(gpr.length_scales)
+
+    def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        mean, var = self._gpr.posterior(x)
+        return lcb(mean=mean, var=var, beta=self._beta)
+
+
+class ConstrainedLogEI(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        gpr: GPRegressor,
+        search_space: SearchSpace,
+        threshold: float,
+        constraints_gpr_list: list[GPRegressor],
+        constraints_threshold_list: list[float],
+        stabilizing_noise: float = 1e-12,
+    ) -> None:
+        self._acqf = LogEI(gpr, search_space, threshold, stabilizing_noise)
+        self._constraints_acqf_list = [
+            LogPI(_gpr, search_space, _threshold, stabilizing_noise)
+            for _gpr, _threshold in zip(constraints_gpr_list, constraints_threshold_list)
+        ]
+        super().__init__(gpr.length_scales)
+
+    def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        return self._acqf.eval_acqf(x) + sum(
+            acqf.eval_acqf(x) for acqf in self._constraints_acqf_list
+        )
+
+
+class LogEHVI(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        gpr_list: list[GPRegressor],
+        search_space: SearchSpace,
+        Y_train: torch.Tensor,
+        n_qmc_samples: int,
+        qmc_seed: int | None,
+        stabilizing_noise: float = 1e-12,
+    ) -> None:
+        def _get_non_dominated_box_bounds() -> tuple[torch.Tensor, torch.Tensor]:
+            # NOTE(nabenabe): Y is to be maximized, loss_vals is to be minimized.
+            loss_vals = -Y_train.detach().numpy()
+            pareto_sols = loss_vals[_is_pareto_front(loss_vals, assume_unique_lexsorted=False)]
+            ref_point = np.max(loss_vals, axis=0)
+            ref_point = np.nextafter(np.maximum(1.1 * ref_point, 0.9 * ref_point), np.inf)
+            lbs, ubs = get_non_dominated_box_bounds(pareto_sols, ref_point)
+            # NOTE(nabenabe): Flip back the sign to make them compatible with maximization.
+            return torch.from_numpy(-ubs), torch.from_numpy(-lbs)
+
+        self._stabilizing_noise = stabilizing_noise
+        self._gpr_list = gpr_list
+        self._fixed_samples = _sample_from_normal_sobol(
+            dim=Y_train.shape[-1], n_samples=n_qmc_samples, seed=qmc_seed
+        )
+        self._non_dominated_box_lower_bounds, self._non_dominated_box_upper_bounds = (
+            _get_non_dominated_box_bounds()
+        )
+        # Since all the objectives are equally important, we simply use the mean of
+        # inverse of squared mean lengthscales over all the objectives.
+        # inverse_squared_lengthscales is used in optim_mixed.py.
+        # cf. https://github.com/optuna/optuna/blob/v4.3.0/optuna/_gp/optim_mixed.py#L200-L209
+        super().__init__(np.mean([gpr.length_scales for gpr in gpr_list], axis=0))
+
+    def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        Y_post = []
+        for i, gpr in enumerate(self._gpr_list):
+            mean, var = gpr.posterior(x)
+            stdev = torch.sqrt(var + self._stabilizing_noise)
+            # NOTE(nabenabe): By using fixed samples from the Sobol sequence, EHVI becomes
+            # deterministic, making it possible to optimize the acqf by l-BFGS.
+            # Sobol is better than the standard Monte-Carlo w.r.t. the approximation stability.
+            # cf. Appendix D of https://arxiv.org/pdf/2006.05078
+            Y_post.append(
+                mean[..., torch.newaxis] + stdev[..., torch.newaxis] * self._fixed_samples[..., i]
+            )
+
+        # NOTE(nabenabe): Use the following once multi-task GP is supported.
+        # L = torch.linalg.cholesky(cov)
+        # Y_post = means[..., torch.newaxis, :] + torch.einsum("...MM,SM->...SM", L, fixed_samples)
+        return logehvi(
+            Y_post=torch.stack(Y_post, dim=-1),
+            non_dominated_box_lower_bounds=self._non_dominated_box_lower_bounds,
+            non_dominated_box_upper_bounds=self._non_dominated_box_upper_bounds,
+        )
 
 
 # TODO(contramundum53): consider abstraction for acquisition functions.
