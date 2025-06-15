@@ -9,7 +9,7 @@ import pytest
 import torch
 
 import optuna
-import optuna._gp.acqf as acqf
+import optuna._gp.acqf as acqf_module
 import optuna._gp.optim_mixed as optim_mixed
 import optuna._gp.prior as prior
 import optuna._gp.search_space as search_space_module
@@ -41,15 +41,14 @@ def test_after_convergence(caplog: LogCaptureFixture) -> None:
         minimum_noise=prior.DEFAULT_MINIMUM_NOISE_VAR,
         deterministic_objective=False,
     )
-    acqf_params = acqf.create_acqf_params(
-        acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
+    acqf = acqf_module.LogEI(
         gpr=gpr,
         search_space=search_space,
-        max_Y=np.max(score_vals),
+        threshold=np.max(score_vals),
     )
     caplog.clear()
     optuna.logging.enable_propagation()
-    optim_mixed.optimize_acqf_mixed(acqf_params, rng=np.random.RandomState(42))
+    optim_mixed.optimize_acqf_mixed(acqf, rng=np.random.RandomState(42))
     # len(caplog.text) > 0 means the optimization has already converged.
     assert len(caplog.text) > 0, "Did you change the kernel implementation?"
 
