@@ -29,7 +29,7 @@ else:
     optim_sample = _LazyImport("optuna._gp.optim_sample")
     acqf = _LazyImport("optuna._gp.acqf")
     prior = _LazyImport("optuna._gp.prior")
-    gp_search_space = _LazyImport("optuna._gp.search_space")
+    search_space_module = _LazyImport("optuna._gp.search_space")
     torch = _LazyImport("torch")
 
 

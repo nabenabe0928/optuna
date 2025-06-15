@@ -24,11 +24,11 @@ if TYPE_CHECKING:
 
     import torch
 
+    from optuna._gp import search_space as search_space_module
     import optuna._gp.acqf as acqf
     import optuna._gp.gp as gp
     import optuna._gp.optim_mixed as optim_mixed
     import optuna._gp.prior as prior
-    import optuna._gp.search_space as search_space_module
     from optuna.distributions import BaseDistribution
     from optuna.study import Study
 else:

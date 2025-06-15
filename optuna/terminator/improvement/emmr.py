@@ -33,7 +33,7 @@ else:
     gp = _LazyImport("optuna._gp.gp")
     acqf = _LazyImport("optuna._gp.acqf")
     prior = _LazyImport("optuna._gp.prior")
-    gp_search_space = _LazyImport("optuna._gp.search_space")
+    search_space_module = _LazyImport("optuna._gp.search_space")
     scipy_stats = _LazyImport("scipy.stats")
 
 MARGIN_FOR_NUMARICAL_STABILITY = 0.1
