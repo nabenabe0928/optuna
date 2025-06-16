@@ -163,7 +163,7 @@ class GPRegressor:
 
         cov_Y_Y[np.diag_indices(self._X_train.shape[0])] += self.kernel_params.noise_var.item()
         cov_Y_Y_inv = np.linalg.inv(cov_Y_Y)
-        cov_Y_Y_inv_Y = cov_Y_Y_inv @ self._y_train.detach().numpy()
+        cov_Y_Y_inv_Y = cov_Y_Y_inv @ self._y_train.numpy()
         # NOTE(nabenabe): Here we use NumPy to guarantee the reproducibility from the past.
         self._cov_Y_Y_inv = torch.from_numpy(cov_Y_Y_inv)
         self._cov_Y_Y_inv_Y = torch.from_numpy(cov_Y_Y_inv_Y)
@@ -272,7 +272,7 @@ class GPRegressor:
         minimum_noise: float,
         deterministic_objective: bool,
         gtol: float = 1e-2,
-    ) -> None:
+    ) -> "GPRegressor":
         """
         First try optimizing the kernel params with the provided kernel parameters in cache, but if
         it fails, rerun the optimization with the default kernel parameters for the robustness.
@@ -282,7 +282,7 @@ class GPRegressor:
         for _ in range(2):
             try:
                 self._fit_kernel_params(log_prior, minimum_noise, deterministic_objective, gtol)
-                return
+                return self
             except RuntimeError as e:
                 error = e
                 self._update_kernel_params(KernelParamsTensor(default_kernel_params.clone()))
@@ -293,3 +293,4 @@ class GPRegressor:
         )
         self._update_kernel_params(KernelParamsTensor(default_kernel_params.clone()))
         self._cache_matrix()
+        return self
