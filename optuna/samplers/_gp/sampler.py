@@ -208,6 +208,23 @@ class GPSampler(BaseSampler):
         )
         return normalized_params
 
+    def _get_gpr_list(
+        self,
+        is_categorical: torch.Tensor,
+        X_train: torch.Tensor,
+        Y_train: torch.Tensor,
+        cache_list: list[torch.Tensor] | None,
+    ) -> list[gp.GPRegressor]:
+        n_objectives = Y_train.shape[-1]
+        _cache_list = [None] * n_objectives if cache_list is None else cache_list
+        assert len(_cache_list) == n_objectives
+        return [
+            gp.GPRegressor(
+                is_categorical, X_train, Y_train[:, i], _cache_list[i]
+            ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
+            for i in range(n_objectives)
+        ]
+
     def _get_constraints_acqf_args(
         self, is_categorical: torch.Tensor, X_train: torch.Tensor, constraint_vals: np.ndarray
     ) -> tuple[list[gp.GPRegressor], list[float]]:
@@ -215,18 +232,9 @@ class GPSampler(BaseSampler):
         C_train = torch.from_numpy(standardized_constraint_vals)
         # Threshold for each sontraint is at c==0.
         constraints_threshold_list = (-means / np.maximum(EPS, stds)).tolist()
-        n_constraints = C_train.shape[-1]
-        _cache_list = (
-            [None] * n_constraints
-            if self._constraints_kernel_params_cache_list is None
-            else self._constraints_kernel_params_cache_list
+        constraints_gpr_list = self._get_gpr_list(
+            is_categorical, X_train, C_train, self._constraints_kernel_params_cache_list
         )
-        constraints_gpr_list = [
-            gp.GPRegressor(
-                is_categorical, X_train, C_train[:, i], _cache_list[i]
-            ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
-            for i in range(n_constraints)
-        ]
         self._constraints_kernel_params_cache_list = [
             gpr.kernel_params.clone() for gpr in constraints_gpr_list
         ]
@@ -255,11 +263,10 @@ class GPSampler(BaseSampler):
 
     def _get_warmstart_indices(
         self, X_train: torch.Tensor, Y_train: torch.Tensor, constraint_vals: np.ndarray | None
-    ) -> int | np.ndarray | None:
+    ) -> np.ndarray | None:
         if constraint_vals is None:
             if Y_train.shape[-1] == 1:
-                best_idx = Y_train[:, 0].numpy().argmax()
-                return int(best_idx)
+                return np.asarray([Y_train[:, 0].argmax().item()])
             else:
                 on_front = _is_pareto_front(-Y_train.numpy(), assume_unique_lexsorted=False)
                 n_pareto_sols = np.count_nonzero(on_front)
@@ -274,7 +281,7 @@ class GPSampler(BaseSampler):
             return None
 
         Y_train_with_neginf = np.where(is_feasible, Y_train[:, 0].numpy(), -np.inf)
-        return int(np.argmax(Y_train_with_neginf).item())
+        return np.asarray([Y_train_with_neginf.argmax().item()])
 
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
@@ -297,32 +304,20 @@ class GPSampler(BaseSampler):
             gp_search_space.scale_types == search_space_module.ScaleType.CATEGORICAL
         )
         n_objectives = Y_train.shape[-1]
-        _cache_list = (
-            [None] * n_objectives
-            if self._kernel_params_cache_list is None
-            else self._kernel_params_cache_list
+        gpr_list = self._get_gpr_list(
+            is_categorical, X_train, Y_train, self._kernel_params_cache_list
         )
-        gpr_list = [
-            gp.GPRegressor(
-                is_categorical, X_train, Y_train[:, i], _cache_list[i]
-            ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
-            for i in range(n_objectives)
-        ]
         self._kernel_params_cache_list = [gpr.kernel_params.clone() for gpr in gpr_list]
         constraint_vals = (
             None if self._constraints_func is None else _get_constraint_vals(study, trials)
         )
         warmstart_indices = self._get_warmstart_indices(X_train, Y_train, constraint_vals)
-        best_params: np.ndarray | None
         acqf: acqf_module.BaseAcquisitionFunc
-        if self._constraints_func is None:
+        if constraint_vals is None:
             if n_objectives == 1:
-                assert len(gpr_list) == 1
-                assert isinstance(warmstart_indices, int)
-                best_idx = int(warmstart_indices)
-                threshold = Y_train[best_idx, 0].item()
+                assert len(gpr_list) == 1 and warmstart_indices is not None
+                threshold = Y_train[warmstart_indices].item()
                 acqf = acqf_module.LogEI(gpr_list[0], gp_search_space, threshold=threshold)
-                best_params = X_train[best_idx, None].numpy()
             else:
                 acqf = acqf_module.LogEHVI(
                     gpr_list=gpr_list,
@@ -331,29 +326,26 @@ class GPSampler(BaseSampler):
                     n_qmc_samples=128,  # NOTE(nabenabe): The BoTorch default value.
                     qmc_seed=self._rng.rng.randint(1 << 30),
                 )
-                assert isinstance(warmstart_indices, np.ndarray) and len(warmstart_indices) >= 1
-                best_params = X_train[warmstart_indices].numpy()
         else:
             assert n_objectives == len(gpr_list) == 1, "Multi-objective has not been supported."
-            assert isinstance(warmstart_indices, int) or warmstart_indices is None
-            best_idx = None if warmstart_indices is None else int(warmstart_indices)
-            best_params = None if best_idx is None else X_train[best_idx, None].numpy()
             constraints_gpr_list, constraints_threshold_list = self._get_constraints_acqf_args(
-                is_categorical, X_train, constraint_vals
+                is_categorical=is_categorical, X_train=X_train, constraint_vals=constraint_vals
             )
             # TODO(kAIto47802): If all infeasible, the acquisition function for the objective
             # function is ignored, so skipping the computation of gpr and acqf_params
             # can improve speed.
             # TODO(kAIto47802): Consider the case where all trials are feasible. We can ignore
             # constraints in this case.
+            threshold = -np.inf if warmstart_indices is None else Y_train[warmstart_indices].item()
             acqf = acqf_module.ConstrainedLogEI(
                 gpr=gpr_list[0],
                 search_space=gp_search_space,
-                threshold=-np.inf if best_idx is None else Y_train[best_idx, 0].item(),
+                threshold=threshold,
                 constraints_gpr_list=constraints_gpr_list,
                 constraints_threshold_list=constraints_threshold_list,
             )
 
+        best_params = None if warmstart_indices is None else X_train[warmstart_indices].numpy()
         normalized_param = self._optimize_acqf(acqf, best_params)
         return search_space_module.get_unnormalized_param(search_space, normalized_param)
 
