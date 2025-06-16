@@ -269,7 +269,7 @@ class GPSampler(BaseSampler):
                 return np.asarray([Y_train[:, 0].argmax().item()])
             else:
                 on_front = _is_pareto_front(-Y_train.numpy(), assume_unique_lexsorted=False)
-                n_pareto_sols = np.count_nonzero(on_front)
+                n_pareto_sols = np.count_nonzero(on_front).item()
                 # TODO(nabenabe): Verify the validity of this choice.
                 size = min(self._n_local_search // 2, n_pareto_sols)
                 chosen_indices = self._rng.rng.choice(n_pareto_sols, size=size, replace=False)
