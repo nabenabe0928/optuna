@@ -372,10 +372,11 @@ class GPSampler(BaseSampler):
             acqf_params = acqf.ConstrainedAcquisitionFunctionParams.from_acqf_params(
                 acqf_params, constraints_acqf_params
             )
+            y_with_neginf = np.where(is_feasible, standardized_score_vals[:, 0], -np.inf)
             best_params = (
                 None
                 if is_all_infeasible
-                else normalized_params[np.argmax(standardized_score_vals[is_feasible]), np.newaxis]
+                else normalized_params[np.argmax(y_with_neginf), np.newaxis]
             )
 
         normalized_param = self._optimize_acqf(acqf_params, best_params)
