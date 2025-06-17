@@ -27,7 +27,7 @@ def default_log_prior(gpr: gp.GPRegressor) -> torch.Tensor:
     # shape for inverse_squared_lengthscales) were picked by heuristics.
     # TODO(contramundum53): Check whether these priors are appropriate.
     return (
-        -(0.1 / gpr.inverse_squared_lengthscales + 0.1 * gpr.inverse_squared_lengthscales).sum()
-        + gamma_log_prior(gpr.kernel_scale, 2, 1)
-        + gamma_log_prior(gpr.noise_var, 1.1, 30)
+        -(0.1 / gpr._inverse_squared_lengthscales + 0.1 * gpr._inverse_squared_lengthscales).sum()
+        + gamma_log_prior(gpr._kernel_scale, 2, 1)
+        + gamma_log_prior(gpr._noise_var, 1.1, 30)
     )

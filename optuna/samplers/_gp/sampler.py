@@ -161,8 +161,8 @@ class GPSampler(BaseSampler):
         self._minimum_noise: float = prior.DEFAULT_MINIMUM_NOISE_VAR
         # We cache the kernel parameters for initial values of fitting the next time.
         # TODO(nabenabe): Make the cache lists system_attrs to make GPSampler stateless.
-        self._gprs_cache_list: list[gp.GPRegressor] | None = None
-        self._constraints_gprs_cache_list: list[gp.GPRegressor] | None = None
+        self._kernel_params_cache_list: list[torch.Tensor] | None = None
+        self._constraints_kernel_params_cache_list: list[torch.Tensor] | None = None
         self._deterministic = deterministic_objective
         self._constraints_func = constraints_func
 
@@ -216,32 +216,27 @@ class GPSampler(BaseSampler):
         normalized_params: np.ndarray,
     ) -> list[acqf.AcquisitionFunctionParams]:
         standardized_constraint_vals, means, stds = _standardize_values(constraint_vals)
-        if self._gprs_cache_list is not None and len(
-            self._gprs_cache_list[0].inverse_squared_lengthscales
-        ) != len(internal_search_space.scale_types):
+        if self._kernel_params_cache_list is not None and len(
+            self._kernel_params_cache_list[0]
+        ) - 2 != len(internal_search_space.scale_types):
             # Clear cache if the search space changes.
-            self._constraints_gprs_cache_list = None
+            self._constraints_kernel_params_cache_list = None
 
         is_categorical = internal_search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
         constraints_gprs = []
         constraints_acqf_params = []
-        for i, (vals, mean, std) in enumerate(zip(standardized_constraint_vals.T, means, stds)):
+        X_train = torch.from_numpy(normalized_params)
+        C_train = torch.from_numpy(standardized_constraint_vals)
+        for i, (vals, mean, std) in enumerate(zip(C_train.T, means, stds)):
             cache = (
-                self._constraints_gprs_cache_list[i]
-                if self._constraints_gprs_cache_list is not None
+                self._constraints_kernel_params_cache_list[i]
+                if self._constraints_kernel_params_cache_list is not None
                 else None
             )
-            gpr = gp.fit_kernel_params(
-                X=normalized_params,
-                Y=vals,
-                is_categorical=is_categorical,
-                log_prior=self._log_prior,
-                minimum_noise=self._minimum_noise,
-                gpr_cache=cache,
-                deterministic_objective=self._deterministic,
-            )
+            gpr = gp.GPRegressor(
+                is_categorical, X_train, vals, kernel_params=cache
+            ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
             constraints_gprs.append(gpr)
-
             constraints_acqf_params.append(
                 acqf.create_acqf_params(
                     acqf_type=acqf.AcquisitionFunctionType.LOG_PI,
@@ -254,8 +249,9 @@ class GPSampler(BaseSampler):
                 )
             )
 
-        self._constraints_gprs_cache_list = constraints_gprs
-
+        self._constraints_kernel_params_cache_list = [
+            gpr.kernel_params for gpr in constraints_gprs
+        ]
         return constraints_acqf_params
 
     def sample_relative(
@@ -285,30 +281,31 @@ class GPSampler(BaseSampler):
             _sign * np.array([trial.values for trial in trials])
         )
 
-        if self._gprs_cache_list is not None and len(
-            self._gprs_cache_list[0].inverse_squared_lengthscales
-        ) != len(internal_search_space.scale_types):
+        if self._kernel_params_cache_list is not None and len(
+            self._kernel_params_cache_list[0]
+        ) - 2 != len(internal_search_space.scale_types):
             # Clear cache if the search space changes.
-            self._gprs_cache_list = None
+            self._kernel_params_cache_list = None
 
         gprs_list = []
         n_objectives = standardized_score_vals.shape[-1]
-        is_categorical = internal_search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
+        is_categorical = torch.from_numpy(
+            internal_search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
+        )
+        X_train = torch.from_numpy(normalized_params)
+        Y_train = torch.from_numpy(standardized_score_vals)
         for i in range(n_objectives):
-            cache = self._gprs_cache_list[i] if self._gprs_cache_list is not None else None
-            gprs_list.append(
-                gp.fit_kernel_params(
-                    X=normalized_params,
-                    Y=standardized_score_vals[:, i],
-                    is_categorical=is_categorical,
-                    log_prior=self._log_prior,
-                    minimum_noise=self._minimum_noise,
-                    gpr_cache=cache,
-                    deterministic_objective=self._deterministic,
-                )
+            cache = (
+                self._kernel_params_cache_list[i]
+                if self._kernel_params_cache_list is not None
+                else None
             )
-        self._gprs_cache_list = gprs_list
-
+            gprs_list.append(
+                gp.GPRegressor(
+                    is_categorical, X_train, Y_train[:, i], kernel_params=cache
+                ).fit_kernel_params(self._log_prior, self._minimum_noise, self._deterministic)
+            )
+        self._kernel_params_cache_list = [gpr.kernel_params for gpr in gprs_list]
         best_params: np.ndarray | None
         if self._constraints_func is None:
             if n_objectives == 1:

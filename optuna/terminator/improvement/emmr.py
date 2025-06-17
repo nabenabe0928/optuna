@@ -152,23 +152,30 @@ class EMMREvaluator(BaseImprovementEvaluator):
 
         assert len(standarized_score_vals) == len(normalized_params)
 
-        gpr_t1 = gp.fit_kernel_params(  # Fit kernel with up to (t-1)-th observation
-            X=normalized_params[..., :-1, :],
-            Y=standarized_score_vals[:-1],
-            is_categorical=(search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL),
+        X_train = torch.from_numpy(normalized_params)
+        y_train = torch.from_numpy(standarized_score_vals)
+        is_categorical = torch.from_numpy(
+            search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
+        )
+        gpr_t1 = gp.GPRegressor(  # Fit kernel with up to (t-1)-th observation
+            X_train=X_train[..., :-1, :],
+            y_train=y_train[:-1],
+            is_categorical=is_categorical,
+            kernel_params=None,
+        ).fit_kernel_params(
             log_prior=prior.default_log_prior,
             minimum_noise=prior.DEFAULT_MINIMUM_NOISE_VAR,
-            gpr_cache=None,
             deterministic_objective=self._deterministic,
         )
 
-        gpr_t = gp.fit_kernel_params(  # Fit kernel with up to t-th observation
-            X=normalized_params,
-            Y=standarized_score_vals,
-            is_categorical=(search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL),
+        gpr_t = gp.GPRegressor(  # Fit kernel with up to t-th observation
+            X_train=X_train,
+            y_train=y_train,
+            is_categorical=is_categorical,
+            kernel_params=gpr_t1.kernel_params,
+        ).fit_kernel_params(
             log_prior=prior.default_log_prior,
             minimum_noise=prior.DEFAULT_MINIMUM_NOISE_VAR,
-            gpr_cache=gpr_t1,
             deterministic_objective=self._deterministic,
         )
 
@@ -279,21 +286,7 @@ def _compute_gp_posterior(
     x_params: np.ndarray,
     gpr: gp.GPRegressor,
 ) -> tuple[float, float]:  # mean, var
-
-    acqf_params = acqf.create_acqf_params(
-        acqf_type=acqf.AcquisitionFunctionType.LOG_EI,
-        gpr=gpr,
-        search_space=search_space,
-        X=X,  # normalized_params[..., :-1, :],
-        Y=Y,  # standarized_score_vals[:-1],
-    )
-    mean_tensor, var_tensor = acqf_params.gpr.posterior(
-        torch.from_numpy(acqf_params.X),
-        torch.from_numpy(
-            acqf_params.search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
-        ),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv_Y),
+    mean_tensor, var_tensor = gpr.posterior(
         torch.from_numpy(x_params),  # best_params or normalized_params[..., -1, :]),
     )
     mean = mean_tensor.detach().numpy().flatten()
@@ -320,12 +313,12 @@ def _posterior_of_batched_theta(
     assert cov_Y_Y_inv.shape == (len_trials, len_trials)
     assert cov_Y_Y_inv_Y.shape == (len_trials,)
 
-    cov_ftheta_fX = gpr.kernel(is_categorical, theta[..., None, :], X)[..., 0, :]
+    cov_ftheta_fX = gpr._kernel(theta[..., None, :], X)[..., 0, :]
     assert cov_ftheta_fX.shape == (len_batch, len_trials)
-    cov_ftheta_ftheta = gpr.kernel(is_categorical, theta[..., None, :], theta)[..., 0, :]
+    cov_ftheta_ftheta = gpr._kernel(theta[..., None, :], theta)[..., 0, :]
     assert cov_ftheta_ftheta.shape == (len_batch, len_batch)
 
-    assert torch.allclose(cov_ftheta_ftheta.diag(), gpr.kernel_scale)
+    assert torch.allclose(cov_ftheta_ftheta.diag(), gpr._kernel_scale)
     assert torch.allclose(cov_ftheta_ftheta, cov_ftheta_ftheta.T)
 
     mean = cov_ftheta_fX @ cov_Y_Y_inv_Y

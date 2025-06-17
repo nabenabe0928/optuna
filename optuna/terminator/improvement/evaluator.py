@@ -16,6 +16,8 @@ from optuna.trial import TrialState
 
 if TYPE_CHECKING:
 
+    import torch
+
     from optuna._gp import acqf
     from optuna._gp import gp
     from optuna._gp import optim_sample
@@ -29,6 +31,8 @@ else:
     acqf = _LazyImport("optuna._gp.acqf")
     prior = _LazyImport("optuna._gp.prior")
     gp_search_space = _LazyImport("optuna._gp.search_space")
+    torch = _LazyImport("torch")
+
 
 DEFAULT_TOP_TRIALS_RATIO = 0.5
 DEFAULT_MIN_N_TRIALS = 20
@@ -174,16 +178,19 @@ class RegretBoundEvaluator(BaseImprovementEvaluator):
         top_n_values_std = max(1e-10, top_n_values.std())
         standarized_top_n_values = (top_n_values - top_n_values_mean) / top_n_values_std
 
-        gpr = gp.fit_kernel_params(
-            X=normalized_top_n_params,
-            Y=standarized_top_n_values,
-            is_categorical=(search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL),
+        gpr = gp.GPRegressor(
+            is_categorical=torch.from_numpy(
+                search_space.scale_types == gp_search_space.ScaleType.CATEGORICAL
+            ),
+            X_train=torch.from_numpy(normalized_top_n_params),
+            y_train=torch.from_numpy(standarized_top_n_values),
+            # TODO(y0z): Add `kernel_params_cache` to speedup.
+            kernel_params=None,
+        ).fit_kernel_params(
             log_prior=self._log_prior,
             minimum_noise=self._minimum_noise,
             # TODO(contramundum53): Add option to specify this.
             deterministic_objective=False,
-            # TODO(y0z): Add `kernel_params_cache` to speedup.
-            gpr_cache=None,
         )
 
         standardized_regret_bound = _compute_standardized_regret_bound(

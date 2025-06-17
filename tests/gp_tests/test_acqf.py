@@ -32,13 +32,13 @@ def X() -> np.ndarray:
     return np.array([[0.1, 0.2], [0.2, 0.3], [0.3, 0.1]])
 
 
-@pytest.fixture
-def gpr() -> GPRegressor:
-    return GPRegressor(
-        inverse_squared_lengthscales=torch.tensor([2.0, 3.0], dtype=torch.float64),
-        kernel_scale=torch.tensor(4.0, dtype=torch.float64),
-        noise_var=torch.tensor(0.1, dtype=torch.float64),
-    )
+def get_gpr(y: np.ndarray) -> GPRegressor:
+    X_train = torch.tensor([[0.1, 0.2], [0.2, 0.3], [0.3, 0.1]], dtype=torch.float64)
+    is_categorical = torch.tensor([False, False])
+    kernel_params = torch.tensor([2.0, 3.0, 4.0, 0.1], dtype=torch.float64)
+    gpr = GPRegressor(is_categorical, X_train, torch.from_numpy(y), kernel_params=kernel_params)
+    gpr._cache_matrix()
+    return gpr
 
 
 @pytest.fixture
@@ -80,11 +80,11 @@ def test_eval_acqf(
     acqf_type: AcquisitionFunctionType,
     beta: float | None,
     x: np.ndarray,
-    gpr: GPRegressor,
     search_space: SearchSpace,
     X: np.ndarray,
 ) -> None:
     Y = np.array([1.0, 2.0, 3.0])
+    gpr = get_gpr(Y)
     acqf_params = create_acqf_params(
         acqf_type=acqf_type,
         gpr=gpr,
@@ -102,7 +102,6 @@ def test_eval_acqf(
 def test_eval_acqf_with_constraints(
     x: np.ndarray,
     additional_values: np.ndarray,
-    gpr: GPRegressor,
     search_space: SearchSpace,
     X: np.ndarray,
 ) -> None:
@@ -112,7 +111,7 @@ def test_eval_acqf_with_constraints(
     is_all_infeasible = not np.any(is_feasible)
     acqf_params = create_acqf_params(
         acqf_type=AcquisitionFunctionType.LOG_EI,
-        gpr=gpr,
+        gpr=get_gpr(Y),
         search_space=search_space,
         X=X,
         Y=Y,
@@ -122,7 +121,7 @@ def test_eval_acqf_with_constraints(
     constraints_acqf_params = [
         create_acqf_params(
             acqf_type=AcquisitionFunctionType.LOG_PI,
-            gpr=gpr,
+            gpr=get_gpr(vals),
             search_space=search_space,
             X=X,
             Y=vals,
@@ -142,7 +141,6 @@ def test_eval_acqf_with_constraints(
 def test_eval_multi_objective_acqf(
     x: np.ndarray,
     additional_values: np.ndarray,
-    gpr: GPRegressor,
     search_space: SearchSpace,
     X: np.ndarray,
 ) -> None:
@@ -153,7 +151,7 @@ def test_eval_multi_objective_acqf(
         acqf_params_for_objectives.append(
             create_acqf_params(
                 AcquisitionFunctionType.LOG_EHVI,
-                gpr=gpr,
+                gpr=get_gpr(Y[:, i]),
                 search_space=search_space,
                 X=X,
                 Y=Y[:, i],

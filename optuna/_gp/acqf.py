@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from optuna._gp.gp import GPRegressor
-from optuna._gp.search_space import ScaleType
 from optuna._gp.search_space import SearchSpace
 from optuna._hypervolume import get_non_dominated_box_bounds
 from optuna.study._multi_objective import _is_pareto_front
@@ -187,19 +186,18 @@ class MultiObjectiveAcquisitionFunctionParams(AcquisitionFunctionParams):
         # Since all the objectives are equally important, we simply use the mean of
         # inverse of squared mean lengthscales over all the objectives.
         mean_lengthscales = np.mean(
-            [
-                1 / np.sqrt(acqf_params.gpr.inverse_squared_lengthscales.detach().numpy())
-                for acqf_params in acqf_params_for_objectives
-            ],
-            axis=0,
+            [acqf_params.gpr.length_scales for acqf_params in acqf_params_for_objectives], axis=0
         )
+        dummy_kernel_params = torch.empty(len(mean_lengthscales) + 2, dtype=torch.float64)
+        # inverse_squared_lengthscales is used in optim_mixed.py.
+        # cf. https://github.com/optuna/optuna/blob/v4.3.0/optuna/_gp/optim_mixed.py#L200-L209
+        dummy_kernel_params[:-2] = torch.from_numpy(1.0 / mean_lengthscales**2)
         dummy_gpr = GPRegressor(
-            # inverse_squared_lengthscales is used in optim_mixed.py.
-            # cf. https://github.com/optuna/optuna/blob/v4.3.0/optuna/_gp/optim_mixed.py#L200-L209
-            inverse_squared_lengthscales=torch.from_numpy(1.0 / mean_lengthscales**2),
+            kernel_params=dummy_kernel_params,
             # These parameters will not be used anywhere.
-            kernel_scale=torch.empty(0),
-            noise_var=torch.empty(0),
+            is_categorical=torch.empty(0),
+            X_train=torch.empty(0),
+            y_train=torch.empty(0),
         )
         repr_acqf_params = acqf_params_for_objectives[0]
         return cls(
@@ -230,44 +228,27 @@ def create_acqf_params(
     beta: float | None = None,
     acqf_stabilizing_noise: float = 1e-12,
 ) -> AcquisitionFunctionParams:
-    X_tensor = torch.from_numpy(X)
-    is_categorical = torch.from_numpy(search_space.scale_types == ScaleType.CATEGORICAL)
-    with torch.no_grad():
-        cov_Y_Y = gpr.kernel(is_categorical, X_tensor, X_tensor).detach().numpy()
-
-    cov_Y_Y[np.diag_indices(X.shape[0])] += gpr.noise_var.item()
-    cov_Y_Y_inv = np.linalg.inv(cov_Y_Y)
-
     return AcquisitionFunctionParams(
         acqf_type=acqf_type,
         gpr=gpr,
         X=X,
         search_space=search_space,
-        cov_Y_Y_inv=cov_Y_Y_inv,
-        cov_Y_Y_inv_Y=cov_Y_Y_inv @ Y,
         max_Y=max_Y if max_Y is not None else np.max(Y),
         beta=beta,
         acqf_stabilizing_noise=acqf_stabilizing_noise,
+        # NOTE: These values are not used anywhere.
+        cov_Y_Y_inv=np.empty(0),
+        cov_Y_Y_inv_Y=np.empty(0),
     )
 
 
 def _eval_ehvi(
     ehvi_acqf_params: MultiObjectiveAcquisitionFunctionParams, x: torch.Tensor
 ) -> torch.Tensor:
-    X = torch.from_numpy(ehvi_acqf_params.X)
-    is_categorical = torch.from_numpy(
-        ehvi_acqf_params.search_space.scale_types == ScaleType.CATEGORICAL
-    )
     Y_post = []
     fixed_samples = ehvi_acqf_params.fixed_samples
     for i, acqf_params in enumerate(ehvi_acqf_params.acqf_params_for_objectives):
-        mean, var = acqf_params.gpr.posterior(
-            X=X,
-            is_categorical=is_categorical,
-            cov_Y_Y_inv=torch.from_numpy(acqf_params.cov_Y_Y_inv),
-            cov_Y_Y_inv_Y=torch.from_numpy(acqf_params.cov_Y_Y_inv_Y),
-            x=x,
-        )
+        mean, var = acqf_params.gpr.posterior(x)
         stdev = torch.sqrt(var + ehvi_acqf_params.acqf_stabilizing_noise)
         # NOTE(nabenabe): By using fixed samples from the Sobol sequence, EHVI becomes
         # deterministic, making it possible to optimize the acqf by l-BFGS.
@@ -290,14 +271,7 @@ def eval_acqf(acqf_params: AcquisitionFunctionParams, x: torch.Tensor) -> torch.
         assert isinstance(acqf_params, MultiObjectiveAcquisitionFunctionParams)
         return _eval_ehvi(ehvi_acqf_params=acqf_params, x=x)
 
-    mean, var = acqf_params.gpr.posterior(
-        torch.from_numpy(acqf_params.X),
-        torch.from_numpy(acqf_params.search_space.scale_types == ScaleType.CATEGORICAL),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv),
-        torch.from_numpy(acqf_params.cov_Y_Y_inv_Y),
-        x,
-    )
-
+    mean, var = acqf_params.gpr.posterior(x)
     if acqf_params.acqf_type == AcquisitionFunctionType.LOG_EI:
         # If there are no feasible trials, max_Y is set to -np.inf.
         # If max_Y is set to -np.inf, we set logEI to zero to ignore it.

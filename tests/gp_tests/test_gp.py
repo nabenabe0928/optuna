@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 import torch
 
-from optuna._gp.gp import _fit_kernel_params
 from optuna._gp.gp import GPRegressor
 from optuna._gp.gp import warn_and_convert_inf
 import optuna._gp.prior as prior
@@ -85,26 +84,18 @@ def test_fit_kernel_params(
     with torch.set_grad_enabled(torch_set_grad_enabled):
         log_prior = prior.default_log_prior
         minimum_noise = prior.DEFAULT_MINIMUM_NOISE_VAR
-        initial_gpr = GPRegressor(
-            inverse_squared_lengthscales=torch.ones(X.shape[1], dtype=torch.float64),
-            kernel_scale=torch.tensor(1.0, dtype=torch.float64),
-            noise_var=torch.tensor(1.0, dtype=torch.float64),
-        )
         gtol: float = 1e-2
-
-        gpr = _fit_kernel_params(
-            X=X,
-            Y=Y,
-            is_categorical=is_categorical,
+        default_kernel_params = torch.ones(X.shape[1] + 2, dtype=torch.float64)
+        gpr = GPRegressor(
+            is_categorical=torch.from_numpy(is_categorical),
+            X_train=torch.from_numpy(X),
+            y_train=torch.from_numpy(Y),
+            kernel_params=default_kernel_params.clone(),
+        )
+        gpr._fit_kernel_params(
             log_prior=log_prior,
             minimum_noise=minimum_noise,
-            gpr_cache=initial_gpr,
             deterministic_objective=deterministic_objective,
             gtol=gtol,
         )
-
-        assert (
-            (gpr.inverse_squared_lengthscales != initial_gpr.inverse_squared_lengthscales).sum()
-            + (gpr.kernel_scale != initial_gpr.kernel_scale).sum()
-            + (gpr.noise_var != initial_gpr.noise_var).sum()
-        )
+        assert any(gpr.kernel_params != default_kernel_params)
