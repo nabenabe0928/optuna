@@ -313,12 +313,12 @@ def _posterior_of_batched_theta(
     assert cov_Y_Y_inv.shape == (len_trials, len_trials)
     assert cov_Y_Y_inv_Y.shape == (len_trials,)
 
-    cov_ftheta_fX = gpr._kernel(theta[..., None, :], X)[..., 0, :]
+    cov_ftheta_fX = gpr.kernel(theta[..., None, :], X)[..., 0, :]
     assert cov_ftheta_fX.shape == (len_batch, len_trials)
-    cov_ftheta_ftheta = gpr._kernel(theta[..., None, :], theta)[..., 0, :]
+    cov_ftheta_ftheta = gpr.kernel(theta[..., None, :], theta)[..., 0, :]
     assert cov_ftheta_ftheta.shape == (len_batch, len_batch)
 
-    assert torch.allclose(cov_ftheta_ftheta.diag(), gpr._kernel_scale)
+    assert torch.allclose(cov_ftheta_ftheta.diag(), gpr.kernel_scale)
     assert torch.allclose(cov_ftheta_ftheta, cov_ftheta_ftheta.T)
 
     mean = cov_ftheta_fX @ cov_Y_Y_inv_Y

@@ -129,15 +129,15 @@ class GPRegressor:
         return np.log(exp_raw_params)
 
     @property
-    def _inverse_squared_lengthscales(self) -> torch.Tensor:
+    def inverse_squared_lengthscales(self) -> torch.Tensor:
         return self._kernel_params[:-2]
 
     @property
-    def _kernel_scale(self) -> torch.Tensor:
+    def kernel_scale(self) -> torch.Tensor:
         return self._kernel_params[-2]
 
     @property
-    def _noise_var(self) -> torch.Tensor:
+    def noise_var(self) -> torch.Tensor:
         return self._kernel_params[-1]
 
     @property
@@ -146,9 +146,9 @@ class GPRegressor:
 
     def _cache_matrix(self) -> None:
         with torch.no_grad():
-            cov_Y_Y = self._kernel(self._X_train, self._X_train).detach().numpy()
+            cov_Y_Y = self.kernel(self._X_train, self._X_train).detach().numpy()
 
-        cov_Y_Y[np.diag_indices(self._X_train.shape[0])] += self._noise_var.item()
+        cov_Y_Y[np.diag_indices(self._X_train.shape[0])] += self.noise_var.item()
         cov_Y_Y_inv = np.linalg.inv(cov_Y_Y)
         cov_Y_Y_inv_Y = cov_Y_Y_inv @ self._y_train.numpy()
         # NOTE(nabenabe): Here we use NumPy to guarantee the reproducibility from the past.
@@ -157,9 +157,9 @@ class GPRegressor:
 
     @property
     def length_scales(self) -> np.ndarray:
-        return 1.0 / np.sqrt(self._inverse_squared_lengthscales.detach().numpy())
+        return 1.0 / np.sqrt(self.inverse_squared_lengthscales.detach().numpy())
 
-    def _kernel(self, X1: torch.Tensor, X2: torch.Tensor) -> torch.Tensor:
+    def kernel(self, X1: torch.Tensor, X2: torch.Tensor) -> torch.Tensor:
         """
         Return the kernel matrix with the shape of (..., n_A, n_B) given X1 and X2 each with the
         shapes of (..., n_A, len(params)) and (..., n_B, len(params)).
@@ -174,16 +174,16 @@ class GPRegressor:
         """
         d2 = (X1[..., :, None, :] - X2[..., None, :, :]) ** 2
         d2[..., self._is_categorical] = (d2[..., self._is_categorical] > 0.0).type(torch.float64)
-        d2 = (d2 * self._inverse_squared_lengthscales).sum(dim=-1)
-        return Matern52Kernel.apply(d2) * self._kernel_scale  # type: ignore
+        d2 = (d2 * self.inverse_squared_lengthscales).sum(dim=-1)
+        return Matern52Kernel.apply(d2) * self.kernel_scale  # type: ignore
 
     def posterior(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # The shape of mean and var is x.shape[:-1].
         assert (
             self._cov_Y_Y_inv is not None and self._cov_Y_Y_inv_Y is not None
         ), "Call cache_matrix before calling posterior."
-        cov_fx_fX = self._kernel(x[..., None, :], self._X_train)[..., 0, :]
-        cov_fx_fx = self._kernel_scale  # kernel(x, x) = kernel_scale
+        cov_fx_fX = self.kernel(x[..., None, :], self._X_train)[..., 0, :]
+        cov_fx_fx = self.kernel_scale  # kernel(x, x) = kernel_scale
 
         # mean = cov_fx_fX @ inv(cov_fX_fX + noise_var * I) @ y
         # var = cov_fx_fx - cov_fx_fX @ inv(cov_fX_fX + noise_var * I) @ cov_fx_fX.T
@@ -196,10 +196,10 @@ class GPRegressor:
     def _marginal_log_likelihood(self) -> torch.Tensor:  # Scalar
         # -0.5 * log((2*pi)**n * det(C)) - 0.5 * y.T @ inv(C) @ y, where inv(C) = cov_Y_Y_inv.
         # We apply the cholesky decomposition to efficiently compute log(det(C)) and inv(C).
-        cov_fX_fX = self._kernel(self._X_train, self._X_train)
+        cov_fX_fX = self.kernel(self._X_train, self._X_train)
         n_points = self._X_train.shape[0]
         cov_Y_Y_chol = torch.linalg.cholesky(
-            cov_fX_fX + self._noise_var * torch.eye(n_points, dtype=torch.float64)
+            cov_fX_fX + self.noise_var * torch.eye(n_points, dtype=torch.float64)
         )
         # log(det(L)) = 0.5 * log(det(L.T @ L)) = 0.5 * log(det(C))
         logdet = 2 * torch.log(torch.diag(cov_Y_Y_chol)).sum()
