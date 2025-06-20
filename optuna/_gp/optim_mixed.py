@@ -16,10 +16,13 @@ from optuna.logging import get_logger
 
 if TYPE_CHECKING:
     import scipy.optimize as so
+
+    from optuna._gp import scipy_wrapper
 else:
     from optuna import _LazyImport
 
     so = _LazyImport("scipy.optimize")
+    scipy_wrapper = _LazyImport("optuna._gp.scipy_wrapper")
 
 _logger = get_logger(__name__)
 
@@ -59,7 +62,7 @@ def _gradient_ascent(
         # Let the scaled acqf be g(x) and the acqf be f(sx), then dg/dx = df/dx * s.
         return -fval, -grad[continuous_indices] * lengthscales
 
-    scaled_cont_x_opt, neg_fval_opt, info = so.fmin_l_bfgs_b(
+    scaled_cont_x_opt, neg_fval_opt, n_iters = scipy_wrapper.fmin_l_bfgs_b(
         func=negative_acqf_with_grad,
         x0=normalized_params[continuous_indices] / lengthscales,
         bounds=[(0, 1 / s) for s in lengthscales],
@@ -67,7 +70,7 @@ def _gradient_ascent(
         maxiter=200,
     )
 
-    if -neg_fval_opt > initial_fval and info["nit"] > 0:  # Improved.
+    if -neg_fval_opt > initial_fval and n_iters > 0:  # Improved.
         # `nit` is the number of iterations.
         normalized_params[continuous_indices] = scaled_cont_x_opt * lengthscales
         return normalized_params, -neg_fval_opt, True

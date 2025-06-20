@@ -20,7 +20,6 @@ is_categorical:
 from __future__ import annotations
 
 import math
-from typing import Any
 from typing import TYPE_CHECKING
 import warnings
 
@@ -31,13 +30,15 @@ from optuna.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Any
 
-    import scipy.optimize as so
     import torch
+
+    from optuna._gp import scipy_wrapper
 else:
     from optuna._imports import _LazyImport
 
-    so = _LazyImport("scipy.optimize")
+    scipy_wrapper = _LazyImport("optuna._gp.scipy_wrapper")
     torch = _LazyImport("torch")
 
 logger = get_logger(__name__)
@@ -212,19 +213,9 @@ def _fit_kernel_params(
             assert not deterministic_objective or raw_noise_var_grad == 0
         return loss.item(), raw_params_tensor.grad.detach().numpy()  # type: ignore
 
-    # jac=True means loss_func returns the gradient for gradient descent.
-    res = so.minimize(
-        # Too small `gtol` causes instability in loss_func optimization.
-        loss_func,
-        initial_raw_params,
-        jac=True,
-        method="l-bfgs-b",
-        options={"gtol": gtol},
+    raw_params_opt_tensor = torch.from_numpy(
+        scipy_wrapper.minimize(loss_func, initial_raw_params, gtol)
     )
-    if not res.success:
-        raise RuntimeError(f"Optimization failed: {res.message}")
-
-    raw_params_opt_tensor = torch.from_numpy(res.x)
 
     return GPRegressor(
         inverse_squared_lengthscales=torch.exp(raw_params_opt_tensor[:n_params]),
