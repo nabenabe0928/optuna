@@ -1,3 +1,19 @@
+"""Notations in GPSampler implementation
+
+normalized_params:
+X_train:
+    Observed parameter tensor with the shape of (len(trials), len(params)).
+    Each parameter is normalized into [0, 1] to make the implementation easier.
+Y_train:
+    Observed objective tensor with the shape of (len(trials), len(directions)).
+    Each objective is independently standardized to follow N(0, 1) due to the GP requirement.
+    Note that the sign of each objective is flipped to convert into the maximization problem.
+constraint_vals:
+    Observed constraint array with the shape of (len(trials), n_constraints).
+    The i-th constraint at the j-th trial is said to be satisfied when constraint_vals[i, j] <= 0.
+    constraint_vals is not processed at all unlike X_train and Y_train.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -174,6 +190,8 @@ class GPSampler(BaseSampler):
         # NOTE(nabenabe): ehvi in BoTorchSampler uses 20.
         self._n_local_search = 10
         self._tol = 1e-4
+        # NOTE(nabenabe): The BoTorch default value.
+        self._n_qmc_samples = 128
 
     def reseed_rng(self) -> None:
         self._rng.rng.seed()
@@ -198,7 +216,7 @@ class GPSampler(BaseSampler):
         Please note that we may remove this function in future refactoring.
         """
         assert best_params is None or len(best_params.shape) == 2
-        normalized_params, _acqf_val = optim_mixed.optimize_acqf_mixed(
+        x_opt, _ = optim_mixed.optimize_acqf_mixed(
             acqf,
             warmstart_normalized_params_array=best_params,
             n_preliminary_samples=self._n_preliminary_samples,
@@ -206,7 +224,7 @@ class GPSampler(BaseSampler):
             tol=self._tol,
             rng=self._rng.rng,
         )
-        return normalized_params
+        return x_opt
 
     def _get_gpr_list(
         self,
@@ -323,7 +341,7 @@ class GPSampler(BaseSampler):
                     gpr_list=gpr_list,
                     search_space=gp_search_space,
                     Y_train=Y_train,
-                    n_qmc_samples=128,  # NOTE(nabenabe): The BoTorch default value.
+                    n_qmc_samples=self._n_qmc_samples,
                     qmc_seed=self._rng.rng.randint(1 << 30),
                 )
         else:
@@ -346,8 +364,9 @@ class GPSampler(BaseSampler):
             )
 
         best_params = None if warmstart_indices is None else X_train[warmstart_indices].numpy()
-        normalized_param = self._optimize_acqf(acqf, best_params)
-        return search_space_module.get_unnormalized_param(search_space, normalized_param)
+        return search_space_module.get_unnormalized_param(
+            search_space, self._optimize_acqf(acqf, best_params)
+        )
 
     def sample_independent(
         self,
