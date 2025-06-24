@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import copy
 import json
 import threading
+import time
 from typing import Any
 from typing import TYPE_CHECKING
 import uuid
@@ -24,6 +25,9 @@ from optuna.trial._state import TrialState
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from google.protobuf.message import Message
     import grpc
 
     from optuna.storages._grpc import servicer as grpc_servicer
@@ -40,6 +44,34 @@ def create_insecure_channel(host: str, port: int) -> grpc.Channel:
     return grpc.insecure_channel(
         f"{host}:{port}", options=[("grpc.max_receive_message_length", -1)]
     )
+
+
+class _StorageServiceStubWrapper:
+    def __init__(self, channel: grpc.Channel, interval_sec: float, max_retries: int) -> None:
+        self._max_retries = max_retries
+        self._interval_sec = interval_sec
+        self._stub = api_pb2_grpc.StorageServiceStub(channel)
+
+    def __getattr__(self, name: str) -> Callable[[Message], grpc.ServicerContext]:
+        request_handler = getattr(self._stub, name)
+        assert callable(request_handler)
+
+        def _request_handler_wrapper(request: Message) -> grpc.ServicerContext:
+            attempts = 0
+            while True:
+                try:
+                    attempts += 1
+                    return request_handler(request)
+                except grpc.RpcError as e:
+                    # NOTE(nabe): `UNAVAILABLE` is equivalent to `grpc._channel._InactiveRpcError`.
+                    if e.code() != grpc.StatusCode.UNAVAILABLE or attempts >= self._max_retries:
+                        raise
+
+                    time.sleep(self._interval_sec)
+
+            assert False, "Should not reach."
+
+        return _request_handler_wrapper
 
 
 @experimental_class("4.2.0")
@@ -72,15 +104,26 @@ class GrpcStorageProxy(BaseStorage):
         behaviors when calling :func:`optuna.delete_study` due to non-invalidated cache.
     """
 
-    def __init__(self, *, host: str = "localhost", port: int = 13000) -> None:
+    def __init__(
+        self,
+        *,
+        host: str = "localhost",
+        port: int = 13000,
+        interval_sec: float = 1e-2,
+        max_retries: int = 10,
+    ) -> None:
         self._host = host
         self._port = port
+        self._interval_sec = interval_sec
+        self._max_retries = max_retries
         self._setup()
 
     def _setup(self) -> None:
         """Set up the gRPC channel and stub."""
         self._channel = create_insecure_channel(self._host, self._port)
-        self._stub = api_pb2_grpc.StorageServiceStub(self._channel)
+        self._stub = _StorageServiceStubWrapper(
+            self._channel, self._interval_sec, self._max_retries
+        )
         self._cache = GrpcClientCache(self._stub)
 
     def wait_server_ready(self, timeout: float | None = None) -> None:
