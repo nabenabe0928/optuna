@@ -64,17 +64,17 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install --progress-bar off -U uv
-        uv pip install --progress-bar off -U setuptools
+        uv pip install --no-progress -U setuptools
 
     - name: Install
       run: |
         # Install minimal dependencies and confirm that `import optuna` is successful.
-        uv pip install --progress-bar off .
+        uv pip install --no-progress .
         python -c 'import optuna'
         optuna --version
 
-        uv pip install --progress-bar off .[test] --extra-index-url https://download.pytorch.org/whl/cpu
-        uv pip install --progress-bar off .[optional] --extra-index-url https://download.pytorch.org/whl/cpu
+        uv pip install --no-progress .[test] --extra-index-url https://download.pytorch.org/whl/cpu
+        uv pip install --no-progress .[optional] --extra-index-url https://download.pytorch.org/whl/cpu
 
         # TODO(gen740): Remove this after pytorch supports Python 3.13
         if [ "${{ matrix.python-version }}" = "3.13" ] ; then
