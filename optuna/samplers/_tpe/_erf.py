@@ -105,39 +105,31 @@ sb7 = -2.24409524465858183362e01
 sb = Polynomial([one, sb1, sb2, sb3, sb4, sb5, sb6, sb7])
 
 
-def erf(x: np.ndarray) -> np.ndarray:
-    a = np.abs(x)
-
-    case_nan = np.isnan(x)
-    case_posinf = np.isposinf(x)
-    case_neginf = np.isneginf(x)
-    case_tiny = a < 2**-28
-    case_small1 = (2**-28 <= a) & (a < 0.84375)
-    case_small2 = (0.84375 <= a) & (a < 1.25)
-    case_med1 = (1.25 <= a) & (a < 1 / 0.35)
-    case_med2 = (1 / 0.35 <= a) & (a < 6)
-    case_big = a >= 6
+def _erf_right(x: np.ndarray) -> np.ndarray:
+    case_tiny = x < 2**-28
+    case_small1 = (2**-28 <= x) & (x < 0.84375)
+    case_small2 = (0.84375 <= x) & (x < 1.25)
+    case_med1 = (1.25 <= x) & (x < 1 / 0.35)
+    case_med2 = (1 / 0.35 <= x) & (x < 6)
 
     def calc_case_tiny(x: np.ndarray) -> np.ndarray:
-        return x + efx * x
+        return x * (1 + efx)
 
     def calc_case_small1(x: np.ndarray) -> np.ndarray:
         z = x * x
         r = pp(z)
         s = qq(z)
         y = r / s
-        return x + x * y
+        return x * (1 + y)
 
     def calc_case_small2(x: np.ndarray) -> np.ndarray:
-        s = np.abs(x) - one
+        s = x - one
         P = pa(s)
         Q = qa(s)
         absout = erx + P / Q
-        return absout * np.sign(x)
+        return absout
 
     def calc_case_med1(x: np.ndarray) -> np.ndarray:
-        sign = np.sign(x)
-        x = np.abs(x)
         s = one / (x * x)
         R = ra(s)
         S = sa(s)
@@ -148,11 +140,9 @@ def erf(x: np.ndarray) -> np.ndarray:
         # SET_LOW_WORD(z, 0)
         # r = np.exp(-z * z - 0.5625) * np.exp((z - x) * (z + x) + R / S)
         r = np.exp(-x * x - 0.5625) * np.exp(R / S)
-        return (one - r / x) * sign
+        return (one - r / x)
 
     def calc_case_med2(x: np.ndarray) -> np.ndarray:
-        sign = np.sign(x)
-        x = np.abs(x)
         s = one / (x * x)
         R = rb(s)
         S = sb(s)
@@ -160,26 +150,24 @@ def erf(x: np.ndarray) -> np.ndarray:
         # SET_LOW_WORD(z, 0)
         # r = np.exp(-z * z - 0.5625) * np.exp((z - x) * (z + x) + R / S)
         r = np.exp(-x * x - 0.5625) * np.exp(R / S)
-        return (one - r / x) * sign
+        return (one - r / x)
 
-    def calc_case_big(x: np.ndarray) -> np.ndarray:
-        return np.sign(x)
-
-    out = np.full_like(a, fill_value=np.nan, dtype=np.float64)
-    out[case_nan] = np.nan
-    out[case_posinf] = 1.0
-    out[case_neginf] = -1.0
-    if x[case_tiny].size:
-        out[case_tiny] = calc_case_tiny(x[case_tiny])
-    if x[case_small1].size:
-        out[case_small1] = calc_case_small1(x[case_small1])
-    if x[case_small2].size:
-        out[case_small2] = calc_case_small2(x[case_small2])
-    if x[case_med1].size:
-        out[case_med1] = calc_case_med1(x[case_med1])
-    if x[case_med2].size:
-        out[case_med2] = calc_case_med2(x[case_med2])
-    if x[case_big].size:
-        out[case_big] = calc_case_big(x[case_big])
+    out = np.where(np.isnan(x), np.nan, 1.0)  # Big values will receive 1.0.
+    if (x_tiny := x[case_tiny]).size:
+        out[case_tiny] = calc_case_tiny(x_tiny)
+    if (x_small1 := x[case_small1]).size:
+        out[case_small1] = calc_case_small1(x_small1)
+    if (x_small2 := x[case_small2]).size:
+        out[case_small2] = calc_case_small2(x_small2)
+    if (x_med1 := x[case_med1]).size:
+        out[case_med1] = calc_case_med1(x_med1)
+    if (x_med2 := x[case_med2]).size:
+        out[case_med2] = calc_case_med2(x_med2)
 
     return out
+
+
+def erf(x: np.ndarray) -> np.ndarray:
+    a = np.abs(x)
+    sign = np.sign(x)
+    return sign * _erf_right(a)
