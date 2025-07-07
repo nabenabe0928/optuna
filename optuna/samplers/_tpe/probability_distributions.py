@@ -66,9 +66,6 @@ def _log_pdf_continuous(x: np.ndarray, dists: list[_BatchedTruncNormDistribution
     # x.shape = (batch_size, dim).
     lows = np.array([d.low for d in dists])
     highs = np.array([d.high for d in dists])
-    steps = np.array(
-        [d.step if isinstance(d, _BatchedDiscreteTruncNormDistributions) else 0.0 for d in dists]
-    )
     # {mus, sigmas}.shape = (1, n_kernels, dim).
     mus = np.array([d.mu for d in dists]).T[np.newaxis]
     sigmas = np.array([d.sigma for d in dists]).T[np.newaxis]

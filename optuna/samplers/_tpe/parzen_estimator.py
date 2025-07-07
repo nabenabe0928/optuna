@@ -104,44 +104,36 @@ class _ParzenEstimator:
         # unexpected size.
         return w
 
-    @staticmethod
-    def _is_log(dist: BaseDistribution) -> bool:
-        return isinstance(dist, (FloatDistribution, IntDistribution)) and dist.log
+    @property
+    def _is_log(self) -> list[bool]:
+        return [
+            isinstance(d, (FloatDistribution, IntDistribution)) and d.log
+            for d in self._search_space.values()
+        ]
 
     def _transform(self, samples_dict: dict[str, np.ndarray]) -> np.ndarray:
-        return np.array(
-            [
-                (
-                    np.log(samples_dict[param])
-                    if self._is_log(self._search_space[param])
-                    else samples_dict[param]
-                )
-                for param in self._search_space
-            ]
-        ).T
+        is_log = self._is_log
+        samples = np.array([samples_dict[param_name] for param_name in self._search_space])
+        samples[is_log, :] = np.log(samples[is_log, :])
+        return samples.T
 
     def _untransform(self, samples_array: np.ndarray) -> dict[str, np.ndarray]:
-        res = {
-            param: (
-                np.exp(samples_array[:, i])
-                if self._is_log(self._search_space[param])
-                else samples_array[:, i]
-            )
-            for i, param in enumerate(self._search_space)
-        }
+        def _clip_int_samples(x: np.ndarray, int_dists: list[IntDistribution]) -> np.ndarray:
+            lows = np.array([d.low for d in int_dists])
+            highs = np.array([d.high for d in int_dists])
+            steps = np.array([d.step for d in int_dists])
+            return np.clip(lows + np.round((x - lows) / steps) * steps, lows, highs)
+
+        int_dists = [d for d in self._search_space.values() if isinstance(d, IntDistribution)]
+        int_indices = [
+            i for i, d in enumerate(self._search_space.values()) if isinstance(d, IntDistribution)
+        ]
+        res = samples_array.copy()
+        is_log = self._is_log
+        res[:, is_log] = np.exp(res[:, is_log])
         # TODO(contramundum53): Remove this line after fixing log-Int hack.
-        return {
-            param: (
-                np.clip(
-                    dist.low + np.round((res[param] - dist.low) / dist.step) * dist.step,
-                    dist.low,
-                    dist.high,
-                )
-                if isinstance(dist, IntDistribution)
-                else res[param]
-            )
-            for (param, dist) in self._search_space.items()
-        }
+        res[:, int_indices] = _clip_int_samples(res[:, int_indices], int_dists)
+        return {param_name: res[:, i] for i, param_name in enumerate(self._search_space)}
 
     def _calculate_distributions(
         self,
