@@ -102,7 +102,12 @@ def _log_ndtr_single(a: float) -> float:
 
 
 def _log_ndtr(a: np.ndarray) -> np.ndarray:
-    return np.frompyfunc(_log_ndtr_single, 1, 1)(a).astype(float)
+    case_moderate = (-20 < a) & (a <= 6)
+    out = np.empty_like(a)
+    out[case_moderate] = np.log(_ndtr(a[case_moderate]))
+    if (a_extreme := a[~case_moderate]).size:
+        out[~case_moderate] = np.frompyfunc(_log_ndtr_single, 1, 1)(a_extreme).astype(float)
+    return out
 
 
 def _norm_logpdf(x: np.ndarray) -> np.ndarray:
