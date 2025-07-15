@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import NamedTuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -12,9 +13,12 @@ from optuna.distributions import FloatDistribution
 from optuna.distributions import IntDistribution
 from optuna.samplers._tpe.probability_distributions import _BatchedCategoricalDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedDiscreteTruncNormDistributions
-from optuna.samplers._tpe.probability_distributions import _BatchedDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedTruncNormDistributions
 from optuna.samplers._tpe.probability_distributions import _MixtureOfProductDistribution
+
+
+if TYPE_CHECKING:
+    from optuna.samplers._tpe.probability_distributions import _BatchedDistributions
 
 
 EPS = 1e-12
