@@ -109,20 +109,11 @@ def _norm_logpdf(x: np.ndarray) -> np.ndarray:
     return -(x**2) / 2.0 - _norm_pdf_logC
 
 
-def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def _log_gauss_mass_1d_from_left(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Log of Gaussian probability mass within an interval"""
-
-    # Calculations in right tail are inaccurate, so we'll exploit the
-    # symmetry and work only in the left tail
-    case_left = b <= 0
-    case_right = a > 0
-    case_central = ~(case_left | case_right)
 
     def mass_case_left(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return _log_diff(_log_ndtr(b), _log_ndtr(a))
-
-    def mass_case_right(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return mass_case_left(-b, -a)
 
     def mass_case_central(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         # Previously, this was implemented as:
@@ -139,13 +130,24 @@ def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
     # _lazyselect not working; don't care to debug it
     out = np.full_like(a, fill_value=np.nan, dtype=np.complex128)
-    if a[case_left].size:
-        out[case_left] = mass_case_left(a[case_left], b[case_left])
-    if a[case_right].size:
-        out[case_right] = mass_case_right(a[case_right], b[case_right])
-    if a[case_central].size:
-        out[case_central] = mass_case_central(a[case_central], b[case_central])
+    case_central = b > 0
+    central_indices = np.nonzero(case_central)[0]
+    left_indices = np.nonzero(~case_central)[0]
+    if left_indices.size:
+        out[left_indices] = mass_case_left(a[left_indices], b[left_indices])
+    if central_indices.size:
+        out[central_indices] = mass_case_central(a[central_indices], b[central_indices])
     return np.real(out)  # discard ~0j
+
+
+def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    # Calculations in right tail are inaccurate, so we'll exploit the
+    # symmetry and work only in the left tail
+    a_ravel = a.ravel()
+    b_ravel = b.ravel()
+    case_right = np.nonzero(a_ravel > 0)[0]
+    a_ravel[case_right], b_ravel[case_right] = -b_ravel[case_right], -a_ravel[case_right]
+    return _log_gauss_mass_1d_from_left(a_ravel, b_ravel).reshape(a.shape)
 
 
 def _ndtri_exp_single(y: float) -> float:
