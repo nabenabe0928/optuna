@@ -1,4 +1,4 @@
-# This code is the modified version of erf function in FreeBSD's standard C library.
+# This code uses the modified version of erf function in FreeBSD's standard C library.
 # origin: FreeBSD /usr/src/lib/msun/src/s_erf.c
 # https://github.com/freebsd/freebsd-src/blob/main/lib/msun/src/s_erf.c
 
@@ -28,12 +28,6 @@ if TYPE_CHECKING:
 
 
 erx = 8.45062911510467529297e-01
-# /*
-#  * In the domain [0, 2**-28], only the first term in the power series
-#  * expansion of erf(x) is used.  The magnitude of the first neglected
-#  * terms is less than 2**-84.
-#  */
-efx = 1.28379167095512586316e-01
 
 # Coefficients for approximation to erf on [0,0.84375]
 
@@ -109,34 +103,108 @@ sb7 = -2.24409524465858183362e01
 sb = Polynomial([1, sb1, sb2, sb3, sb4, sb5, sb6, sb7])
 
 
-def _erf_right_non_big(x: np.ndarray) -> np.ndarray:
+def _ndtr_negative_non_big(x: np.ndarray) -> np.ndarray:
+    """
+    This function compute the cumulative distribution function (CDF) of the standard normal
+    distribution in the range where the input is non-big and non-positive, i.e., -38 < x <= 0.
+
+    ndtr is usually computed as 0.5 * erfc(-x / sqrt(2)) for x < -1 and as
+    0.5 * (1 + erf(x / sqrt(2))) for x >= -1.
+    Since x < 0 in this function and erf is an odd function, we can compute ndtr as:
+        0.5 * (1 - erf(a)) for x >= -1 and 0.5 * erfc(a) for x < -1 where a = -x / sqrt(2).
+
+    However, we use a different switching point in our function due to the choice of our piece-wise
+    approximation function. In our case, the boundary of each pice is at a=0.84375, 1.25, and
+    so on. As a=0.84375, i.e., x = -1.1879..., is the closest point to -1, we use it as the
+    switching point.
+
+    NOTE(nabenabe): Our switching point is also fine numerically because erf(-1.1879... / sqrt(2)) 
+    = erf(-0.84375) = -0.767..., which is not smaller than -0.9 and hence does not cause underflow.
+    To illustrate what I mean,, let's assume a floating number can express only up to 6 digits.
+        When erf(z) is -9.12345e-1, 1 + erf(z) is 1e-1 - 1.2345e-2.
+        When erf(z) is -9.91234e-1, 1 + erf(z) is 1e-2  - 1.234e-3.
+        When erf(z) is -9.99123e-1, 1 + erf(z) is 1e-3 - 1.23e-4.
+        When erf(z) is -9.99912e-1, 1 + erf(z) is 1e-4  - 1.2e-5.
+    In the example above, the precision reduction is observed in erf(z) as the heading digits are
+    filled with 9s. This explains why switching points are fine as long as erf(z) > -0.9, which
+    ours fulfills.
+    """
     assert len(x.shape) == 1, "Input must be a 1D array."
-    # NOTE(nabenabe): Add [6] to the list and use out = np.ones_like(x) to handle the big case.
-    bin_inds = np.count_nonzero(x >= [[2**-28], [0.84375], [1.25], [1 / 0.35]], axis=0)
+    assert np.all(x >= 0), "All elements must be non-positive."
+    # NOTE(nabenabe): Binning is much quicker than creating individual bool arrays.
+    bin_inds = np.count_nonzero(
+        (a := x / -2**0.5) >= [[0.84375], [1.25], [1 / 0.35]], axis=0
+    )
     out = np.empty_like(x)
-    erf_approx_in_each_bin: list[Callable[[np.ndarray], np.ndarray]] = [
-        lambda x: (1 + efx) * x,  # Tiny: x < 2**-28.
-        lambda x: x * (1 + pp(z := x * x) / qq(z)),  # Small1: 2**-28 <= x < 0.84375.
-        lambda x: erx + pa(s := x - 1) / qa(s),  # Small2: 0.84375 <= x < 1.25.
-        # Med1: 1.25 <= x < 1 / 0.35, Med2: 1 / 0.35 <= x < 6.
-        # Omit SET_LOW_WORD due to its unavailablility in NumPy and no need for high accuracy.
-        lambda x: 1 - np.exp(-(z := x * x) - 0.5625 + ra(s := 1 / z) / sa(s)) / x,
-        lambda x: 1 - np.exp(-(z := x * x) - 0.5625 + rb(s := 1 / z) / sb(s)) / x,
-    ]
-    for bin_idx, erf_approx_in_bin in enumerate(erf_approx_in_each_bin):
-        if (target_inds := np.nonzero(bin_inds == bin_idx)[0]).size:
-            out[target_inds] = erf_approx_in_bin(x[target_inds])
+    if (target_inds := np.nonzero(bin_inds == 0)[0]).size:  # Small1: a < 0.84375
+        # Compute 1 - erf(a) for this range. Use erfc(a) for the other ranges.
+        out[target_inds] = 1 - (u := a[target_inds]) * (1 + pp(z := u * u) / qq(z))
+    if (target_inds := np.nonzero(bin_inds == 1)[0]).size:  # Small2: 0.84375 <= a < 1.25
+        out[target_inds] = 1 - erx - pa(s := a[target_inds] - 1) / qa(s)
+    if (target_inds := np.nonzero(bin_inds == 2)[0]).size:  # Med1: 1.25 <= a < 1 / 0.35
+        u = a[target_inds]
+        out[target_inds] = np.exp(-(z := u * u) - 0.5625 + ra(s := 1 / z) / sa(s)) / u
+    if (target_inds := np.nonzero(bin_inds == 3)[0]).size:  # Med2: a > 1 / 0.35
+        # The computation is accurate up to a < 27
+        u = a[target_inds]
+        out[target_inds] = np.exp(-(z := u * u) - 0.5625 + rb(s := 1 / z) / sb(s)) / u
+    return 0.5 * out  # Don't forget multiplying 0.5.
 
-    return out
+
+def ndtr_negative(x: np.ndarray) -> np.ndarray:
+    """
+    This function computes the cumulative distribution function (CDF) of the standard normal
+    distribution at non-positive values, i.e., x <= 0.
+
+    NOTE(nabenabe): ndtr is used only for non-positive values, but the positive side can be
+    computed. Please compute at the negative side first and use ndtr(-x) = 1 - ndtr(x) for
+    numerical stability. For positive side, ndtr(-x) = 1 - ndtr(x) can appropriately calculated up
+    to x < 9. So please return 1.0 for x >= 9 for the efficiency.
+    """
+    x_ravel = x.ravel()
+    out = np.where(np.isnan(x_ravel), np.nan, 0.0)
+    non_big_inds = np.nonzero(-38 < x_ravel)[0]
+    out[non_big_inds] = _ndtr_negative_non_big(x_ravel[non_big_inds])
+    return out.reshape(x.shape)
 
 
-def erf(x: np.ndarray) -> np.ndarray:
-    if x.size < 2000:
-        return np.asarray([math.erf(v) for v in x.ravel()]).reshape(x.shape)
+def _log_ndtr_negative(x: np.ndarray) -> np.ndarray:
+    """
+    This function computes the logarithm of the cumulative distribution function (CDF) of the
+    standard normal distribution at non-positive values, i.e., x <= 0.
 
-    a = np.abs(x).ravel()
-    is_not_nan = ~np.isnan(a)
-    out = np.where(is_not_nan, 1.0, np.nan)
-    non_big_inds = np.nonzero(is_not_nan & (a < 6))[0]
-    out[non_big_inds] = _erf_right_non_big(a[non_big_inds])
-    return np.sign(x) * out.reshape(x.shape)
+    NOTE(nabenabe): log_ndtr is also used only for non-positive values, but the positive side can
+    be computed. Denote z := -ndtr(-x). Then, we can compute log_ndtr at the positive side as:
+        0.0 (x > 38), z (8 < x <= 38), log1p(z) (x <= 8).
+    z is the first term of the Taylor series expansion of log1p(z). This formula is applicable
+    because z goes to zero as x grows.
+    """
+    assert len(x.shape) == 1, "Input must be a 1D array."
+    assert np.all(x <= 0), "All elements must be non-positive."
+    # NOTE(nabenabe): Binning is much quicker than creating individual bool arrays.
+    bin_inds = np.count_nonzero(
+        (a := x / -2**0.5) >= [[0.84375], [1.25], [1 / 0.35]], axis=0
+    )
+    out = np.empty_like(x)
+    # We use the same piece-wise approximation as in _ndtr_negative_non_big.
+    # The only difference is that we use med2 for even big values.
+    if (target_inds := np.nonzero(bin_inds == 0)[0]).size:  # Small1: a < 0.84375
+        out[target_inds] = np.log(1 - (u := a[target_inds]) * (1 + pp(z := u * u) / qq(z)))
+    if (target_inds := np.nonzero(bin_inds == 1)[0]).size:  # Small2: 0.84375 <= a < 1.25
+        out[target_inds] = np.log(1 - erx - pa(s := a[target_inds] - 1) / qa(s))
+    if (target_inds := np.nonzero(bin_inds == 2)[0]).size:  # Med1: 1.25 <= a < 1 / 0.35
+        u = a[target_inds]
+        out[target_inds] = -(z := u * u) - 0.5625 + ra(s := 1 / z) / sa(s) - np.log(u)
+    if (target_inds := np.nonzero(bin_inds == 3)[0]).size:  # Med2: a > 1 / 0.35
+        # The computation is accurate for even big a.
+        u = a[target_inds]
+        out[target_inds] = -(z := u * u) - 0.5625 + rb(s := 1 / z) / sb(s) - np.log(u)
+    return out - math.log(2)
+
+
+def log_ndtr_negative(x: np.ndarray) -> np.ndarray:
+    x_ravel = x.ravel()
+    out = np.full_like(x_ravel, np.nan, dtype=float)
+    not_nan_inds = np.nonzero(~np.isnan(x_ravel))[0]
+    out[not_nan_inds] = _log_ndtr_negative(x_ravel[not_nan_inds])
+    return out.reshape(x.shape)
