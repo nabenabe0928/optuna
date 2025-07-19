@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+# TODO(nabenabe): Rename this file to ndtr.py.
+
 erx = 8.45062911510467529297e-01
 
 # Coefficients for approximation to erf on [0,0.84375]
@@ -122,9 +124,9 @@ def _ndtr_negative_non_big(x: np.ndarray) -> np.ndarray:
     = erf(-0.84375) = -0.767..., which is not smaller than -0.9 and hence does not cause underflow.
     To illustrate what I mean,, let's assume a floating number can express only up to 6 digits.
         When erf(z) is -9.12345e-1, 1 + erf(z) is 1e-1 - 1.2345e-2.
-        When erf(z) is -9.91234e-1, 1 + erf(z) is 1e-2  - 1.234e-3.
-        When erf(z) is -9.99123e-1, 1 + erf(z) is 1e-3 - 1.23e-4.
-        When erf(z) is -9.99912e-1, 1 + erf(z) is 1e-4  - 1.2e-5.
+        When erf(z) is -9.91234e-1, 1 + erf(z) is 1e-2 - 1.2340e-3.
+        When erf(z) is -9.99123e-1, 1 + erf(z) is 1e-3 - 1.2300e-4.
+        When erf(z) is -9.99912e-1, 1 + erf(z) is 1e-4 - 1.2000e-5.
     In the example above, the precision reduction is observed in erf(z) as the heading digits are
     filled with 9s. This explains why switching points are fine as long as erf(z) > -0.9, which
     ours fulfills.
