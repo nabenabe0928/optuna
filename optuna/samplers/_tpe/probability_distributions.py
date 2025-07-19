@@ -79,18 +79,17 @@ class _MixtureOfProductDistribution(NamedTuple):
         return ret
 
     def log_pdf(self, x: np.ndarray) -> np.ndarray:
-        batch_size, n_vars = x.shape
-        log_pdfs = np.empty((batch_size, len(self.weights), n_vars), dtype=np.float64)
+        weighted_log_pdf = np.zeros((len(x), len(self.weights)), dtype=np.float64)
         for i, d in enumerate(self.distributions):
             xi = x[:, i]
             if isinstance(d, _BatchedCategoricalDistributions):
-                log_pdfs[:, :, i] = np.log(
+                weighted_log_pdf += np.log(
                     np.take_along_axis(
                         d.weights[None, :, :], xi[:, None, None].astype(np.int64), axis=-1
                     )
                 )[:, :, 0]
             elif isinstance(d, _BatchedTruncNormDistributions):
-                log_pdfs[:, :, i] = _truncnorm.logpdf(
+                weighted_log_pdf += _truncnorm.logpdf(
                     x=xi[:, None],
                     a=(d.low - d.mu[None, :]) / d.sigma[None, :],
                     b=(d.high - d.mu[None, :]) / d.sigma[None, :],
@@ -110,11 +109,10 @@ class _MixtureOfProductDistribution(NamedTuple):
                     (d.low - d.step / 2 - d.mu[None, :]) / d.sigma[None, :],
                     (d.high + d.step / 2 - d.mu[None, :]) / d.sigma[None, :],
                 )
-                log_pdfs[:, :, i] = log_gauss_mass - log_p_accept
-
+                weighted_log_pdf += log_gauss_mass - log_p_accept
             else:
                 assert False
-        weighted_log_pdf = np.sum(log_pdfs, axis=-1) + np.log(self.weights[None, :])
+        weighted_log_pdf += np.log(self.weights[None, :])
         max_ = weighted_log_pdf.max(axis=1)
         # We need to avoid (-inf) - (-inf) when the probability is zero.
         max_[np.isneginf(max_)] = 0

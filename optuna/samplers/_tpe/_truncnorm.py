@@ -81,7 +81,7 @@ def _log_ndtr_single(a: float) -> float:
     if a > -20:
         return math.log(_ndtr_single(a))
 
-    log_LHS = -0.5 * a**2 - math.log(-a) - 0.5 * math.log(2 * math.pi)
+    log_LHS = -0.5 * a**2 - math.log(-a) - _norm_pdf_logC
     last_total = 0.0
     right_hand_side = 1.0
     numerator = 1.0
