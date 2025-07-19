@@ -130,7 +130,6 @@ def _ndtr_negative_non_big(x: np.ndarray) -> np.ndarray:
     ours fulfills.
     """
     assert len(x.shape) == 1, "Input must be a 1D array."
-    assert np.all(x >= 0), "All elements must be non-positive."
     # NOTE(nabenabe): Binning is much quicker than creating individual bool arrays.
     bin_inds = np.count_nonzero(
         (a := x / -2**0.5) >= [[0.84375], [1.25], [1 / 0.35]], axis=0
@@ -162,7 +161,7 @@ def ndtr_negative(x: np.ndarray) -> np.ndarray:
     to x < 9. So please return 1.0 for x >= 9 for the efficiency.
     """
     x_ravel = x.ravel()
-    out = np.where(np.isnan(x_ravel), np.nan, 0.0)
+    out = np.zeros_like(x_ravel)
     non_big_inds = np.nonzero(-38 < x_ravel)[0]
     out[non_big_inds] = _ndtr_negative_non_big(x_ravel[non_big_inds])
     return out.reshape(x.shape)
@@ -180,7 +179,6 @@ def _log_ndtr_negative(x: np.ndarray) -> np.ndarray:
     because z goes to zero as x grows.
     """
     assert len(x.shape) == 1, "Input must be a 1D array."
-    assert np.all(x <= 0), "All elements must be non-positive."
     # NOTE(nabenabe): Binning is much quicker than creating individual bool arrays.
     bin_inds = np.count_nonzero(
         (a := x / -2**0.5) >= [[0.84375], [1.25], [1 / 0.35]], axis=0
@@ -203,8 +201,4 @@ def _log_ndtr_negative(x: np.ndarray) -> np.ndarray:
 
 
 def log_ndtr_negative(x: np.ndarray) -> np.ndarray:
-    x_ravel = x.ravel()
-    out = np.full_like(x_ravel, np.nan, dtype=float)
-    not_nan_inds = np.nonzero(~np.isnan(x_ravel))[0]
-    out[not_nan_inds] = _log_ndtr_negative(x_ravel[not_nan_inds])
-    return out.reshape(x.shape)
+    return _log_ndtr_negative(x.ravel()).reshape(x.shape)
