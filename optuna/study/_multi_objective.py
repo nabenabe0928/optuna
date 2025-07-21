@@ -11,6 +11,30 @@ from optuna.trial import FrozenTrial
 from optuna.trial import TrialState
 
 
+def _unique_lexsort_2d(
+    a: np.ndarray, return_inverse: bool = False
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    if a.shape[-1] <= 3:
+        order = np.argsort(a[:, -1])
+        for m in range(1, a.shape[-1]):
+            # "stable" is required for tie-breaking.
+            order = order[np.argsort(a[order, -m-1], kind="stable")]
+    else:
+        order = np.lexsort(a[:, ::-1].T)
+
+    a_order = a[order]
+    is_first_occurrence = np.empty(order.size, dtype=bool)
+    is_first_occurrence[0] = True
+    is_first_occurrence[1:] = np.any(a_order[1:] != a_order[:-1], axis=-1)
+    a_uniq = a_order[is_first_occurrence]
+    if not return_inverse:
+        return a_uniq
+
+    inv = np.empty(order.size, dtype=int)
+    inv[order] = np.cumsum(is_first_occurrence) - 1
+    return a_uniq, inv
+
+
 def _get_pareto_front_trials_by_trials(
     trials: Sequence[FrozenTrial],
     directions: Sequence[StudyDirection],
@@ -173,7 +197,7 @@ def _is_pareto_front(loss_values: np.ndarray, assume_unique_lexsorted: bool) -> 
     if assume_unique_lexsorted:
         return _is_pareto_front_for_unique_sorted(loss_values)
 
-    unique_lexsorted_loss_values, order_inv = np.unique(loss_values, axis=0, return_inverse=True)
+    unique_lexsorted_loss_values, order_inv = _unique_lexsort_2d(loss_values, return_inverse=True)
     on_front = _is_pareto_front_for_unique_sorted(unique_lexsorted_loss_values)
     # NOTE(nabenabe): We can remove `.reshape(-1)` if ``numpy==2.0.0`` is not used.
     # https://github.com/numpy/numpy/issues/26738
@@ -193,8 +217,7 @@ def _calculate_nondomination_rank(
         return ranks
 
     # It ensures that trials[j] will not dominate trials[i] for i < j.
-    # np.unique does lexsort.
-    unique_lexsorted_loss_values, order_inv = np.unique(loss_values, return_inverse=True, axis=0)
+    unique_lexsorted_loss_values, order_inv = _unique_lexsort_2d(loss_values, return_inverse=True)
     n_unique = unique_lexsorted_loss_values.shape[0]
     # Clip n_below.
     n_below = min(n_below or len(unique_lexsorted_loss_values), len(unique_lexsorted_loss_values))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from optuna.study._multi_objective import _is_pareto_front
+from optuna.study._multi_objective import _unique_lexsort_2d
 
 
 def _compute_2d(sorted_pareto_sols: np.ndarray, reference_point: np.ndarray) -> float:
@@ -138,7 +139,7 @@ def compute_hypervolume(
         return float("inf")
 
     if not assume_pareto:
-        unique_lexsorted_loss_vals = np.unique(loss_vals, axis=0)
+        unique_lexsorted_loss_vals = _unique_lexsort_2d(loss_vals)
         on_front = _is_pareto_front(unique_lexsorted_loss_vals, assume_unique_lexsorted=True)
         sorted_pareto_sols = unique_lexsorted_loss_vals[on_front]
     else:
