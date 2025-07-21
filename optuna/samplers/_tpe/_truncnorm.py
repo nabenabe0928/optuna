@@ -217,7 +217,29 @@ def _ndtri_exp_single(y: float) -> float:
 
 
 def _ndtri_exp(y: np.ndarray) -> np.ndarray:
-    return np.frompyfunc(_ndtri_exp_single, 1, 1)(y).astype(float)
+    # return np.frompyfunc(_ndtri_exp_single, 1, 1)(y).astype(np.float64)
+    # z = log_ndtr(-x) --> z = log1p(-ndtr(x)) --> z = log1p(-exp(y)) --> z = log(-expm1(y)).
+    # Since x becomes negative for y > -log(2), we use this formula and flip the sign later.
+    flipped = y > -math.log(2)
+    z = np.where(flipped, np.log(-np.expm1(y)), y)  # z is always < -log(2) = -0.693...
+    case_small = z < -5
+    x = np.empty_like(y)
+    if (z_small := z[case_small]).size:
+        x[case_small] = -np.sqrt(-2.0 * (z_small + _norm_pdf_logC))
+    if (z_moderate := z[~case_small]).size:
+        x[~case_small] = -_ndtri_exp_approx_C * np.log(np.exp(-z_moderate) - 1)
+
+    for _ in range(100):
+        log_ndtr_x = _log_ndtr_negative(x)
+        log_norm_pdf_x = _norm_logpdf(x)
+        # NOTE(nabenabe): Use exp(log_ndtr_x - log_norm_pdf_x) instead of ndtr_x / norm_pdf_x for
+        # numerical stability.
+        dx = (log_ndtr_x - z) * np.exp(log_ndtr_x - log_norm_pdf_x)
+        x -= dx
+        if np.all(np.abs(dx) < 1e-8 * np.abs(x)):
+            # Equivalent to np.isclose with atol=0.0 and rtol=1e-8.
+            break
+    return np.where(flipped, -x, x)
 
 
 def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarray:
