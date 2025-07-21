@@ -139,7 +139,8 @@ def compute_hypervolume(
         return float("inf")
 
     if not assume_pareto:
-        unique_lexsorted_loss_vals = _unique_lexsort_2d(loss_vals)
+        unique_lexsorted_loss_vals = _unique_lexsort_2d(loss_vals, return_inverse=False)
+        assert isinstance(unique_lexsorted_loss_vals, np.ndarray)
         on_front = _is_pareto_front(unique_lexsorted_loss_vals, assume_unique_lexsorted=True)
         sorted_pareto_sols = unique_lexsorted_loss_vals[on_front]
     else:
