@@ -99,7 +99,7 @@ def _log_pdf_discrete(
             (xi_uniq[..., np.newaxis] - d.step / 2 - mu_uniq) / sigma_uniq,
             (xi_uniq[..., np.newaxis] + d.step / 2 - mu_uniq) / sigma_uniq,
         )[np.ix_(xi_inv, mu_sigma_inv)]
-        res -= _log_gauss_mass_unique(
+        res -= _truncnorm._log_gauss_mass(
             (d.low - d.step / 2 - mu_uniq) / sigma_uniq,
             (d.high + d.step / 2 - mu_uniq) / sigma_uniq,
         )[mu_sigma_inv]
