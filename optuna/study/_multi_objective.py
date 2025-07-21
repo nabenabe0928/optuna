@@ -18,7 +18,7 @@ def _unique_lexsort_2d(
         order = np.argsort(a[:, -1])
         for m in range(1, a.shape[-1]):
             # "stable" is required for tie-breaking.
-            order = order[np.argsort(a[order, -m-1], kind="stable")]
+            order = order[np.argsort(a[order, -m - 1], kind="stable")]
     else:
         order = np.lexsort(a[:, ::-1].T)
 
