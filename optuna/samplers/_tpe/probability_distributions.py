@@ -34,16 +34,6 @@ _BatchedDistributions = Union[
 ]
 
 
-def _log_pdf_continuous(x: np.ndarray, dists: list[_BatchedTruncNormDistributions]) -> np.ndarray:
-    lows = np.asarray([d.low for d in dists])
-    highs = np.asarray([d.high for d in dists])
-    mus = np.asarray([d.mu for d in dists]).T
-    sigmas = np.asarray([d.sigma for d in dists]).T
-    return _truncnorm.logpdf(
-        x[:, np.newaxis], (lows - mus) / sigmas, (highs - mus) / sigmas, loc=mus, scale=sigmas
-    )
-
-
 class _MixtureOfProductDistribution(NamedTuple):
     weights: np.ndarray
     distributions: list[_BatchedDistributions]
@@ -117,11 +107,18 @@ class _MixtureOfProductDistribution(NamedTuple):
                     (d.high + d.step / 2 - d.mu[None, :]) / d.sigma[None, :],
                 )
                 log_pdfs[:, :, i] = log_gauss_mass - log_p_accept
-
             else:
                 assert False
 
-        log_pdfs[..., cont_inds] = _log_pdf_continuous(x[:, cont_inds], cont_dists)
+        mus_cont = np.asarray([d.mu for d in cont_dists]).T
+        sigmas_cont = np.asarray([d.sigma for d in cont_dists]).T
+        log_pdfs[..., cont_inds] = _truncnorm.logpdf(
+            x[:, np.newaxis, cont_inds],
+            (np.asarray([d.low for d in cont_dists]) - mus_cont) / sigmas_cont,
+            (np.asarray([d.high for d in cont_dists]) - mus_cont) / sigmas_cont,
+            loc=mus_cont,
+            scale=sigmas_cont,
+        )
         weighted_log_pdf = np.sum(log_pdfs, axis=-1) + np.log(self.weights[None, :])
         max_ = weighted_log_pdf.max(axis=1)
         # We need to avoid (-inf) - (-inf) when the probability is zero.
