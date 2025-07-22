@@ -96,9 +96,9 @@ class _MixtureOfProductDistribution(NamedTuple):
         for i, d in enumerate(self.distributions):
             if isinstance(d, _BatchedCategoricalDistributions):
                 xi = x[:, i, np.newaxis, np.newaxis].astype(np.int64)
-                weighted_log_pdf = np.log(
-                    np.take_along_axis(d.weights[np.newaxis], xi, axis=-1)
-                )[..., 0]
+                log_pdfs[:, :, i] = np.log(np.take_along_axis(d.weights[np.newaxis], xi, axis=-1))[
+                    ..., 0
+                ]
             elif isinstance(d, _BatchedTruncNormDistributions):
                 cont_dists.append(d)
                 cont_inds.append(i)
