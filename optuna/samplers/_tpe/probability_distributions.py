@@ -34,6 +34,16 @@ _BatchedDistributions = Union[
 ]
 
 
+def _log_pdf_continuous(x: np.ndarray, dists: list[_BatchedTruncNormDistributions]) -> np.ndarray:
+    lows = np.asarray([d.low for d in dists])
+    highs = np.asarray([d.high for d in dists])
+    mus = np.asarray([d.mu for d in dists]).T
+    sigmas = np.asarray([d.sigma for d in dists]).T
+    return _truncnorm.logpdf(
+        x[:, np.newaxis], (lows - mus) / sigmas, (highs - mus) / sigmas, loc=mus, scale=sigmas
+    )
+
+
 class _MixtureOfProductDistribution(NamedTuple):
     weights: np.ndarray
     distributions: list[_BatchedDistributions]
@@ -81,23 +91,19 @@ class _MixtureOfProductDistribution(NamedTuple):
     def log_pdf(self, x: np.ndarray) -> np.ndarray:
         batch_size, n_vars = x.shape
         log_pdfs = np.empty((batch_size, len(self.weights), n_vars), dtype=np.float64)
+        cont_dists = []
+        cont_inds = []
         for i, d in enumerate(self.distributions):
-            xi = x[:, i]
             if isinstance(d, _BatchedCategoricalDistributions):
-                log_pdfs[:, :, i] = np.log(
-                    np.take_along_axis(
-                        d.weights[None, :, :], xi[:, None, None].astype(np.int64), axis=-1
-                    )
-                )[:, :, 0]
+                xi = x[:, i, np.newaxis, np.newaxis].astype(np.int64)
+                weighted_log_pdf = np.log(
+                    np.take_along_axis(d.weights[np.newaxis], xi, axis=-1)
+                )[..., 0]
             elif isinstance(d, _BatchedTruncNormDistributions):
-                log_pdfs[:, :, i] = _truncnorm.logpdf(
-                    x=xi[:, None],
-                    a=(d.low - d.mu[None, :]) / d.sigma[None, :],
-                    b=(d.high - d.mu[None, :]) / d.sigma[None, :],
-                    loc=d.mu[None, :],
-                    scale=d.sigma[None, :],
-                )
+                cont_dists.append(d)
+                cont_inds.append(i)
             elif isinstance(d, _BatchedDiscreteTruncNormDistributions):
+                xi = x[:, i]
                 lower_limit = d.low - d.step / 2
                 upper_limit = d.high + d.step / 2
                 x_lower = np.maximum(xi - d.step / 2, lower_limit)
@@ -114,6 +120,8 @@ class _MixtureOfProductDistribution(NamedTuple):
 
             else:
                 assert False
+
+        log_pdfs[..., cont_inds] = _log_pdf_continuous(x[:, cont_inds], cont_dists)
         weighted_log_pdf = np.sum(log_pdfs, axis=-1) + np.log(self.weights[None, :])
         max_ = weighted_log_pdf.max(axis=1)
         # We need to avoid (-inf) - (-inf) when the probability is zero.
