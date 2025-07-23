@@ -31,6 +31,42 @@ class _ParzenEstimatorParameters(NamedTuple):
     ]
 
 
+def _calculate_numerical_distributions(
+    observations: np.ndarray,  # shape: (n_trials, dim)
+    lows: np.ndarray,  # shape: (dim,)
+    highs: np.ndarray,  # shape: (dim,)
+    steps: np.ndarray,  # shape: (dim,)
+    multivariate: bool,
+    consider_endpoints: bool,
+    consider_magic_clip: bool,
+    search_space_dim: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    (n_trials, dim) = observations.shape
+    domain_ranges = highs - lows + steps
+    if n_trials == 0:  # No observations, return prior distributions.
+        return 0.5 * (lows + highs)[np.newaxis], 0.5 * domain_ranges[np.newaxis]
+
+    mus = np.vstack([observations, 0.5 * (lows + highs)])
+    minsigma = domain_ranges / min(100.0, 1.0 + len(mus)) if consider_magic_clip else EPS
+    if multivariate:
+        C_amise = -1 / (search_space_dim + 4)
+        sigmas = np.broadcast_to(0.2 * n_trials ** C_amise * domain_ranges, (n_trials, dim))
+        return mus, np.vstack([np.clip(sigmas, minsigma, domain_ranges), domain_ranges])
+    order = np.argsort(mus, axis=0)
+    sorted_mus = np.take_along_axis(mus, order, axis=0)
+    mu_deltas = np.diff(sorted_mus, axis=0)
+    sorted_sigmas = np.empty_like(mus)
+    sorted_sigmas[1:-1] = np.maximum(mu_deltas[:-1], mu_deltas[1:])
+    end_margins = [sorted_mus[0] - lows + steps / 2, highs + steps / 2 - sorted_mus[-1]]
+    sorted_sigmas[[0, -1]] = np.maximum(
+        mu_deltas[[0, -1]], end_margins if consider_endpoints else 0.0
+    )
+    inv = np.empty_like(order, dtype=int)
+    inv[order, np.arange(dim)[np.newaxis, :]] = np.arange(len(order))[:, np.newaxis]
+    sigmas = np.take_along_axis(sorted_sigmas, inv[:n_trials], axis=0)
+    return mus, np.vstack([np.clip(sigmas, minsigma, domain_ranges), domain_ranges])
+
+
 class _ParzenEstimator:
     def __init__(
         self,
@@ -63,13 +99,31 @@ class _ParzenEstimator:
         else:
             weights = np.append(weights, [parameters.prior_weight])
         weights /= weights.sum()
+        mus, sigmas = _calculate_numerical_distributions(
+            transformed_observations,
+            lows=np.array([dist.low for dist in search_space.values()]),
+            highs=np.array([dist.high for dist in search_space.values()]),
+            steps=np.array([dist.step or 0.0 for dist in search_space.values()]),
+            multivariate=parameters.multivariate,
+            consider_endpoints=parameters.consider_endpoints,
+            consider_magic_clip=parameters.consider_magic_clip,
+            search_space_dim=len(search_space),
+        )
         self._mixture_distribution = _MixtureOfProductDistribution(
             weights=weights,
+            # distributions=[
+            #     self._calculate_distributions(
+            #         transformed_observations[:, i], param, search_space[param], parameters
+            #     )
+            #     for i, param in enumerate(search_space)
+            # ],
             distributions=[
-                self._calculate_distributions(
-                    transformed_observations[:, i], param, search_space[param], parameters
-                )
-                for i, param in enumerate(search_space)
+                _BatchedTruncNormDistributions(
+                    mus[:, i], sigmas[:, i], dist.low, dist.high
+                ) if dist.step is None
+                else _BatchedDiscreteTruncNormDistributions(
+                    mus[:, i], sigmas[:, i], dist.low, dist.high, dist.step
+                ) for i, dist in enumerate(search_space.values())
             ],
         )
 
