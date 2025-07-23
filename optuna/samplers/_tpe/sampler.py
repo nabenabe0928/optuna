@@ -17,6 +17,8 @@ from optuna._hypervolume import compute_hypervolume
 from optuna._hypervolume.hssp import _solve_hssp
 from optuna.distributions import BaseDistribution
 from optuna.distributions import CategoricalChoiceType
+from optuna.distributions import FloatDistribution
+from optuna.distributions import IntDistribution
 from optuna.logging import get_logger
 from optuna.samplers._base import _CONSTRAINTS_KEY
 from optuna.samplers._base import _INDEPENDENT_SAMPLING_WARNING_TEMPLATE
@@ -45,11 +47,11 @@ _logger = get_logger(__name__)
 
 
 def default_gamma(x: int) -> int:
-    return min(int(np.ceil(0.1 * x)), 25)
+    return min(int(math.ceil(0.1 * x)), 25)
 
 
 def hyperopt_default_gamma(x: int) -> int:
-    return min(int(np.ceil(0.25 * np.sqrt(x))), 25)
+    return min(int(math.ceil(0.25 * x**0.5)), 25)
 
 
 def default_weights(x: int) -> np.ndarray:
@@ -58,9 +60,10 @@ def default_weights(x: int) -> np.ndarray:
     elif x < 25:
         return np.ones(x)
     else:
-        ramp = np.linspace(1.0 / x, 1.0, num=x - 25)
-        flat = np.ones(25)
-        return np.concatenate([ramp, flat], axis=0)
+        weights = np.empty(x, dtype=float)
+        weights[-25:] = 1.0
+        weights[:-25] = np.linspace(1.0 / x, 1.0, num=x - 25)
+        return weights
 
 
 class TPESampler(BaseSampler):
@@ -464,14 +467,16 @@ class TPESampler(BaseSampler):
     def _get_internal_repr(
         self, trials: list[FrozenTrial], search_space: dict[str, BaseDistribution]
     ) -> dict[str, np.ndarray]:
-        values: dict[str, list[float]] = {param_name: [] for param_name in search_space}
+        values: list[list[float]] = [[] for _ in search_space]
         for trial in trials:
-            if all((param_name in trial.params) for param_name in search_space):
-                for param_name in search_space:
-                    param = trial.params[param_name]
-                    distribution = trial.distributions[param_name]
-                    values[param_name].append(distribution.to_internal_repr(param))
-        return {k: np.asarray(v) for k, v in values.items()}
+            if search_space.keys() <= trial.params.keys():
+                for i, param_name in enumerate(search_space):
+                    # TODO: Categorical
+                    values[i].append(trial.params[param_name])
+        values_array = np.asarray(values)
+        log_inds = [i for i, dist in enumerate(search_space) if isinstance(dist, (IntDistribution, FloatDistribution)) and dist.log]
+        values_array[log_inds] = np.log(values_array[log_inds])
+        return {k: v for k, v in zip(search_space, values_array)}
 
     def _sample(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
@@ -519,9 +524,7 @@ class TPESampler(BaseSampler):
         if handle_below and study._is_multi_objective():
             param_mask_below = []
             for trial in trials:
-                param_mask_below.append(
-                    all((param_name in trial.params) for param_name in search_space)
-                )
+                param_mask_below.append(search_space.keys() <= trial.params.keys())
             weights_below = _calculate_weights_below_for_multi_objective(
                 study, trials, self._constraints_func
             )[param_mask_below]
@@ -703,7 +706,7 @@ def _split_complete_trials_multi_objective(
 
     assert 0 < n_below < len(trials)
     lvals = np.array([trial.values for trial in trials])
-    lvals *= np.array([-1.0 if d == StudyDirection.MAXIMIZE else 1.0 for d in study.directions])
+    lvals *= [-1.0 if d == StudyDirection.MAXIMIZE else 1.0 for d in study.directions]
     nondomination_ranks = _fast_non_domination_rank(lvals, n_below=n_below)
     ranks, rank_counts = np.unique(nondomination_ranks, return_counts=True)
     last_rank_before_tiebreak = int(np.max(ranks[np.cumsum(rank_counts) <= n_below], initial=-1))
@@ -784,12 +787,12 @@ def _calculate_weights_below_for_multi_objective(
         return weights_below
 
     lvals = np.asarray([t.values for t in below_trials])[is_feasible]
-    lvals *= np.array([-1.0 if d == StudyDirection.MAXIMIZE else 1.0 for d in study.directions])
+    lvals *= [-1.0 if d == StudyDirection.MAXIMIZE else 1.0 for d in study.directions]
     ref_point = _get_reference_point(lvals)
     on_front = _is_pareto_front(lvals, assume_unique_lexsorted=False)
     pareto_sols = lvals[on_front]
     hv = compute_hypervolume(pareto_sols, ref_point, assume_pareto=True)
-    if np.isinf(hv):
+    if math.isinf(hv):
         # TODO(nabenabe): Assign EPS to non-Pareto solutions, and
         # solutions with finite contrib if hv is inf. Ref: PR#5813.
         return weights_below
