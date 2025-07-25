@@ -73,6 +73,13 @@ class _TreeNode:
             current_node = current_node.children[value]
         return current_node
 
+    def is_complete(self, exclude_running: bool) -> bool:
+        # In essence, same as `self.count_unexpanded() == 0`.
+        if self.children is None:
+            return exclude_running and self.is_running
+        else:
+            return all(child.is_complete(exclude_running) for child in self.children.values())
+
     def count_unexpanded(self, exclude_running: bool) -> int:
         # Count the number of unexpanded nodes in the subtree.
         if self.children is None:
@@ -212,7 +219,7 @@ class BruteForceSampler(BaseSampler):
         # being initialized as an empty graph, which is created with n_jobs > 1
         # where we get trials[i].params = {} for some i.
         self._populate_tree(tree, (t for t in trials if t.number != trial.number), trial.params)
-        if tree.count_unexpanded(exclude_running) == 0:
+        if tree.is_complete(exclude_running):
             return param_distribution.to_external_repr(self._rng.rng.choice(candidates))
         else:
             return param_distribution.to_external_repr(
@@ -242,7 +249,7 @@ class BruteForceSampler(BaseSampler):
             tree, (t if t.number != trial.number else temporal_complete_trial for t in trials), {}
         )
 
-        if tree.count_unexpanded(exclude_running) == 0:
+        if tree.is_complete(exclude_running):
             study.stop()
 
 
@@ -256,11 +263,9 @@ def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[floa
         low, high = param_distribution.low, param_distribution.high
         return _enumerate_float_candidates(low, high, step)
     elif isinstance(param_distribution, IntDistribution):
-        return list(
-            range(param_distribution.low, param_distribution.high + 1, param_distribution.step)
-        )
+        return range(param_distribution.low, param_distribution.high + 1, param_distribution.step)
     elif isinstance(param_distribution, CategoricalDistribution):
-        return list(range(len(param_distribution.choices)))  # Internal representations.
+        return range(len(param_distribution.choices))  # Internal representations.
     else:
         raise ValueError(f"Unknown distribution {param_distribution}.")
 
