@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from collections.abc import Sequence
 from dataclasses import dataclass
 import decimal
+from functools import lru_cache
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -202,16 +203,8 @@ class BruteForceSampler(BaseSampler):
         # We directly query the storage to get trials here instead of `study.get_trials`,
         # since some pruners such as `HyperbandPruner` use the study transformed
         # to filter trials. See https://github.com/optuna/optuna/issues/2327 for details.
-        trials = study._storage.get_all_trials(
-            study._study_id,
-            deepcopy=False,
-            states=(
-                TrialState.COMPLETE,
-                TrialState.PRUNED,
-                TrialState.RUNNING,
-                TrialState.FAIL,
-            ),
-        )
+        states = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING, TrialState.FAIL)
+        trials = study._storage.get_all_trials(study._study_id, deepcopy=False, states=states)
         tree = _TreeNode()
         candidates = _enumerate_candidates(param_distribution)
         tree.expand(param_name, candidates)
@@ -238,33 +231,15 @@ class BruteForceSampler(BaseSampler):
         # We directly query the storage to get trials here instead of `study.get_trials`,
         # since some pruners such as `HyperbandPruner` use the study transformed
         # to filter trials. See https://github.com/optuna/optuna/issues/2327 for details.
-        trials = study._storage.get_all_trials(
-            study._study_id,
-            deepcopy=False,
-            states=(
-                TrialState.COMPLETE,
-                TrialState.PRUNED,
-                TrialState.RUNNING,
-                TrialState.FAIL,
-            ),
-        )
+        states = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING, TrialState.FAIL)
+        trials = study._storage.get_all_trials(study._study_id, deepcopy=False, states=states)
         tree = _TreeNode()
+        # Set current trial as complete.
+        temporal_complete_trial = create_trial(
+            state=state, values=values, params=trial.params, distributions=trial.distributions
+        )
         self._populate_tree(
-            tree,
-            (
-                (
-                    t
-                    if t.number != trial.number
-                    else create_trial(
-                        state=state,  # Set current trial as complete.
-                        values=values,
-                        params=trial.params,
-                        distributions=trial.distributions,
-                    )
-                )
-                for t in trials
-            ),
-            {},
+            tree, (t if t.number != trial.number else temporal_complete_trial for t in trials), {}
         )
 
         if tree.count_unexpanded(exclude_running) == 0:
@@ -273,22 +248,13 @@ class BruteForceSampler(BaseSampler):
 
 def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[float]:
     if isinstance(param_distribution, FloatDistribution):
-        if param_distribution.step is None:
+        if (step := param_distribution.step) is None:
             raise ValueError(
                 "FloatDistribution.step must be given for BruteForceSampler"
                 " (otherwise, the search space will be infinite)."
             )
-        low = decimal.Decimal(str(param_distribution.low))
-        high = decimal.Decimal(str(param_distribution.high))
-        step = decimal.Decimal(str(param_distribution.step))
-
-        ret = []
-        value = low
-        while value <= high:
-            ret.append(float(value))
-            value += step
-
-        return ret
+        low, high = param_distribution.low, param_distribution.high
+        return _enumerate_float_candidates(low, high, step)
     elif isinstance(param_distribution, IntDistribution):
         return list(
             range(param_distribution.low, param_distribution.high + 1, param_distribution.step)
@@ -297,3 +263,18 @@ def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[floa
         return list(range(len(param_distribution.choices)))  # Internal representations.
     else:
         raise ValueError(f"Unknown distribution {param_distribution}.")
+
+
+@lru_cache(maxsize=100)
+def _enumerate_float_candidates(low: float, high: float, step: float) -> Sequence[float]:
+    low = decimal.Decimal(str(low))
+    high = decimal.Decimal(str(high))
+    step = decimal.Decimal(str(step))
+
+    ret = []
+    value = low
+    while value <= high:
+        ret.append(float(value))
+        value += step
+
+    return ret
