@@ -522,9 +522,7 @@ class TPESampler(BaseSampler):
     ) -> _ParzenEstimator:
         observations = self._get_internal_repr(trials, search_space)
         if handle_below and study._is_multi_objective():
-            param_mask_below = []
-            for trial in trials:
-                param_mask_below.append(search_space.keys() <= trial.params.keys())
+            param_mask_below = [search_space.keys() <= trial.params.keys() for trial in trials]
             weights_below = _calculate_weights_below_for_multi_objective(
                 study, trials, self._constraints_func
             )[param_mask_below]
