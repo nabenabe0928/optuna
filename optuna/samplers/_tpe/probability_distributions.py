@@ -62,6 +62,10 @@ def _log_gauss_mass_unique(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return _truncnorm._log_gauss_mass(a_uniq, b_uniq)[inv].reshape(a.shape)
 
 
+def _log_standard_norm_pdf(z: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return -(z**2) / 2.0 - _truncnorm._norm_pdf_logC - _truncnorm._log_gauss_mass(a, b)
+
+
 class _MixtureOfProductDistribution(NamedTuple):
     weights: np.ndarray
     distributions: list[_BatchedDistributions]
@@ -148,29 +152,25 @@ class _MixtureOfProductDistribution(NamedTuple):
             elif isinstance(d, _BatchedDiscreteTruncNormDistributions):
                 xi_uniq, xi_inv = np.unique(x[:, i], return_inverse=True)
                 mu_uniq, sigma_uniq, mu_sigma_inv = _unique_inverse_2d(d.mu, d.sigma)
-                lower_limit = d.low - d.step / 2
-                upper_limit = d.high + d.step / 2
-                x_lower = np.maximum(xi_uniq - d.step / 2, lower_limit)[:, np.newaxis]
-                x_upper = np.minimum(xi_uniq + d.step / 2, upper_limit)[:, np.newaxis]
                 weighted_log_pdf += _log_gauss_mass_unique(
-                    (x_lower - mu_uniq) / sigma_uniq, (x_upper - mu_uniq) / sigma_uniq
+                    ((xi_uniq - d.step / 2)[:, np.newaxis] - mu_uniq) / sigma_uniq,
+                    ((xi_uniq + d.step / 2)[:, np.newaxis] - mu_uniq) / sigma_uniq,
                 )[np.ix_(xi_inv, mu_sigma_inv)]
                 # Very unlikely to observe duplications below, so we skip the unique operation.
                 weighted_log_pdf -= _truncnorm._log_gauss_mass(
-                    (lower_limit - mu_uniq) / sigma_uniq, (upper_limit - mu_uniq) / sigma_uniq
+                    (d.low - d.step / 2 - mu_uniq) / sigma_uniq,
+                    (d.high + d.step / 2 - mu_uniq) / sigma_uniq,
                 )[mu_sigma_inv]
             else:
                 assert False
 
         mus_cont = np.asarray([d.mu for d in cont_dists]).T
         sigmas_cont = np.asarray([d.sigma for d in cont_dists]).T
-        weighted_log_pdf += _truncnorm.logpdf(
-            x[:, np.newaxis, cont_inds],
+        weighted_log_pdf += _log_standard_norm_pdf(
+            (x[:, np.newaxis, cont_inds] - mus_cont) / sigmas_cont,
             (np.asarray([d.low for d in cont_dists]) - mus_cont) / sigmas_cont,
             (np.asarray([d.high for d in cont_dists]) - mus_cont) / sigmas_cont,
-            loc=mus_cont,
-            scale=sigmas_cont,
-        ).sum(axis=-1)
+        ).sum(axis=-1) - np.log(sigmas_cont).sum(axis=-1)
         weighted_log_pdf += np.log(self.weights[np.newaxis])
         max_ = weighted_log_pdf.max(axis=1)
         # We need to avoid (-inf) - (-inf) when the probability is zero.

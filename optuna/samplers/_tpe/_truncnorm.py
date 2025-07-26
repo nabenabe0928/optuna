@@ -174,7 +174,7 @@ def _ndtri_exp(y: np.ndarray) -> np.ndarray:
     return x
 
 
-def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarray:
+def ppf(q: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """
     Compute the percent point function (inverse of cdf) at q of the given truncated Gaussian.
 
@@ -189,8 +189,7 @@ def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarr
     for the case where `a < 0`, i.e., `case_left`. For `case_right`, we flip the sign for the
     better numerical stability.
     """
-    q, a, b = np.atleast_1d(q, a, b)
-    q, a, b = np.broadcast_arrays(q, a, b)
+    assert a.shape == b.shape == q.shape
     log_mass = _log_gauss_mass(a, b)
     right_inds = np.nonzero(a >= 0)
     a[right_inds] = -b[right_inds]
@@ -204,26 +203,15 @@ def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarr
 def rvs(
     a: np.ndarray,
     b: np.ndarray,
-    loc: np.ndarray | float = 0,
-    scale: np.ndarray | float = 1,
+    loc: np.ndarray,
+    scale: np.ndarray,
     random_state: np.random.RandomState | None = None,
 ) -> np.ndarray:
     """
     This function generates random variates from a truncated normal distribution defined between
     `a` and `b` with the mean of `loc` and the standard deviation of `scale`.
     """
+    assert a.shape == b.shape == loc.shape == scale.shape
     random_state = random_state or np.random.RandomState()
-    size = np.broadcast(a, b, loc, scale).shape
-    quantiles = random_state.uniform(low=0, high=1, size=size)
+    quantiles = random_state.uniform(low=0, high=1, size=a.shape)
     return ppf(quantiles, a, b) * scale + loc
-
-
-def logpdf(
-    x: np.ndarray,
-    a: np.ndarray | float,
-    b: np.ndarray | float,
-    loc: np.ndarray | float = 0,
-    scale: np.ndarray | float = 1,
-) -> np.ndarray:
-    z, a, b = np.atleast_1d((x - loc) / scale, a, b)
-    return -(z**2) / 2.0 - _norm_pdf_logC - _log_gauss_mass(a, b) - np.log(scale)
