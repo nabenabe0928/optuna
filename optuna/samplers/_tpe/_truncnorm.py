@@ -43,40 +43,15 @@ from optuna.samplers._tpe._erf import log_ndtr_negative as numpy_log_ndtr_negati
 from optuna.samplers._tpe._erf import ndtr_negative as numpy_ndtr_negative
 
 
-_norm_pdf_C = math.sqrt(2 * math.pi)
-_norm_pdf_logC = math.log(_norm_pdf_C)
+_norm_pdf_logC = 0.5 * math.log(2 * math.pi)
 _ndtri_exp_approx_C = math.sqrt(3) / math.pi
 
 
-def _log_sum(log_p: np.ndarray, log_q: np.ndarray) -> np.ndarray:
-    return np.logaddexp(log_p, log_q)
-
-
-def _log_diff(log_p: np.ndarray, log_q: np.ndarray) -> np.ndarray:
-    return log_p + np.log1p(-np.exp(log_q - log_p))
-
-
-def _ndtr_single(a: float) -> float:
-    x = a / 2**0.5
-
-    if x < -1 / 2**0.5:
-        y = 0.5 * math.erfc(-x)
-    elif x < 1 / 2**0.5:
-        y = 0.5 + 0.5 * math.erf(x)
-    else:
-        y = 1.0 - 0.5 * math.erfc(x)
-
-    return y
-
-
-@functools.lru_cache(1000)
-def _log_ndtr_single(a: float) -> float:
-    if a > 6:
-        return -_ndtr_single(-a)
+def _log_ndtr_negative_single(a: float) -> float:
     if a > -20:
-        return math.log(_ndtr_single(a))
+        return math.log(0.5 * (math.erfc(-a / 2**0.5) if a < -1 else 1 + math.erf(a / 2**0.5)))
 
-    log_LHS = -0.5 * a**2 - math.log(-a) - 0.5 * math.log(2 * math.pi)
+    log_LHS = -0.5 * a**2 - math.log(-a) - _norm_pdf_logC
     last_total = 0.0
     right_hand_side = 1.0
     numerator = 1.0
@@ -84,7 +59,6 @@ def _log_ndtr_single(a: float) -> float:
     denom_cons = 1 / a**2
     sign = 1
     i = 0
-
     while abs(last_total - right_hand_side) > sys.float_info.epsilon:
         i += 1
         last_total = right_hand_side
@@ -98,7 +72,7 @@ def _log_ndtr_single(a: float) -> float:
 
 def _log_ndtr_negative(a: np.ndarray) -> np.ndarray:
     if a.size < 300:
-        return np.asarray([_log_ndtr_single(v) for v in a.ravel()]).reshape(a.shape)
+        return np.asarray([_log_ndtr_negative_single(v) for v in a.ravel()]).reshape(a.shape)
 
     return numpy_log_ndtr_negative(a)
 
@@ -108,10 +82,6 @@ def _ndtr_negative(a: np.ndarray) -> np.ndarray:
         return 0.5 * (1 + np.asarray([math.erf(v) for v in a.ravel() / 2**0.5])).reshape(a.shape)
     
     return numpy_ndtr_negative(a)
-
-
-def _norm_logpdf(x: np.ndarray) -> np.ndarray:
-    return -(x**2) / 2.0 - _norm_pdf_logC
 
 
 def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -126,7 +96,9 @@ def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     central_inds = np.nonzero(b > 0)
 
     def mass_case_left(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return _log_diff(_log_ndtr_negative(b), _log_ndtr_negative(a))
+        log_ndtr_b = _log_ndtr_negative(b)
+        log_ndtr_a = _log_ndtr_negative(a)
+        return log_ndtr_b + np.log1p(-np.exp(log_ndtr_a - log_ndtr_b))
 
     def mass_case_central(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         # Previously, this was implemented as:
@@ -142,15 +114,15 @@ def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return np.log1p(-_ndtr_negative(a) - _ndtr_negative(-b))
 
     # _lazyselect not working; don't care to debug it
-    out = np.full_like(a, fill_value=np.nan, dtype=np.complex128)
+    out = np.empty_like(a)
     if left_inds[0].size:
         out[left_inds] = mass_case_left(a[left_inds], b[left_inds])
     if central_inds[0].size:
         out[central_inds] = mass_case_central(a[central_inds], b[central_inds])
-    return np.real(out)  # discard ~0j
+    return out
 
 
-def _ndtri_exp_single(y: float) -> float:
+def _ndtri_exp(y: np.ndarray) -> np.ndarray:
     """
     Use the Newton method to efficiently find the root.
 
@@ -192,32 +164,6 @@ def _ndtri_exp_single(y: float) -> float:
         --> log(exp(-y) - 1) \\simeq -pi * x / sqrt(3)
         --> x \\simeq -sqrt(3) / pi * log(exp(-y) - 1).
     """
-    if y > -sys.float_info.min:
-        return math.inf if y <= 0 else math.nan
-
-    if y > -1e-2:  # Case 1. abs(y) << 1.
-        u = -2.0 * math.log(-y)
-        x = math.sqrt(u - math.log(u))
-    elif y < -5:  # Case 2. abs(y) >> 1.
-        x = -math.sqrt(-2.0 * (y + _norm_pdf_logC))
-    else:  # Case 3. Moderate y.
-        x = -_ndtri_exp_approx_C * math.log(math.exp(-y) - 1)
-
-    for _ in range(100):
-        log_ndtr_x = _log_ndtr_single(x)
-        log_norm_pdf_x = -0.5 * x**2 - _norm_pdf_logC
-        # NOTE(nabenabe): Use exp(log_ndtr_x - log_norm_pdf_x) instead of ndtr_x / norm_pdf_x for
-        # numerical stability.
-        dx = (log_ndtr_x - y) * math.exp(log_ndtr_x - log_norm_pdf_x)
-        x -= dx
-        if abs(dx) < 1e-8 * abs(x):  # Equivalent to np.isclose with atol=0.0 and rtol=1e-8.
-            break
-
-    return x
-
-
-def _ndtri_exp(y: np.ndarray) -> np.ndarray:
-    # return np.frompyfunc(_ndtri_exp_single, 1, 1)(y).astype(np.float64)
     # z = log_ndtr(-x) --> z = log1p(-ndtr(x)) --> z = log1p(-exp(y)) --> z = log(-expm1(y)).
     # Since x becomes negative for y > -log(2), we use this formula and flip the sign later.
     flipped = y > -math.log(2)
@@ -232,9 +178,10 @@ def _ndtri_exp(y: np.ndarray) -> np.ndarray:
 
     for _ in range(100):
         log_ndtr_x = _log_ndtr_negative(x)
-        # NOTE(nabenabe): Use exp(log_ndtr_x - _norm_logpdf(x)) instead of ndtr_x / norm_pdf_x for
+        # NOTE(nabenabe): Use exp(log_ndtr_x - norm_logpdf_x) instead of ndtr_x / norm_pdf_x for
         # numerical stability.
-        dx = (log_ndtr_x - z) * np.exp(log_ndtr_x - _norm_logpdf(x))
+        norm_logpdf_x = -x**2 / 2.0 - _norm_pdf_logC
+        dx = (log_ndtr_x - z) * np.exp(log_ndtr_x - norm_logpdf_x)
         x -= dx
         if np.all(np.abs(dx) < 1e-8 * np.abs(x)):
             # Equivalent to np.isclose with atol=0.0 and rtol=1e-8.
@@ -262,12 +209,10 @@ def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarr
     log_mass = _log_gauss_mass(a, b)
     right_inds = np.nonzero(a >= 0)
     a[right_inds] = -b[right_inds]
-    q[right_inds] = 1 - q[right_inds]
-    x = _ndtri_exp(_log_sum(_log_ndtr_negative(a), np.log(q) + log_mass))
+    log_q = np.log(q)
+    log_q[right_inds] = np.log1p(-q[right_inds])
+    x = _ndtri_exp(np.logaddexp(_log_ndtr_negative(a), log_mass + log_q))
     x[right_inds] *= -1
-    # out[q == 0] = a[q == 0]
-    # out[q == 1] = b[q == 1]
-    # out[a == b] = math.nan
     return x
 
 
@@ -297,8 +242,6 @@ def logpdf(
 ) -> np.ndarray:
     x = (x - loc) / scale
     x, a, b = np.atleast_1d(x, a, b)
-    out = _norm_logpdf(x) - _log_gauss_mass(a, b) - np.log(scale)
+    out = -x**2 / 2.0 - _norm_pdf_logC - _log_gauss_mass(a, b) - np.log(scale)
     x, a, b = np.broadcast_arrays(x, a, b)
-    # out[(x < a) | (b < x)] = -np.inf
-    # out[a == b] = math.nan
     return out
