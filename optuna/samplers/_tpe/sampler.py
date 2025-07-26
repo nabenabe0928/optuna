@@ -63,6 +63,41 @@ def default_weights(x: int) -> np.ndarray:
         return np.concatenate([ramp, flat], axis=0)
 
 
+def _solve_hssp_with_cache(
+    study: optuna.Study,
+    rank_i_loss_vals: np.ndarray,
+    rank_i_indices: np.ndarray,
+    subset_size: int,
+    reference_point: np.ndarray,
+) -> np.ndarray:
+    hssp_cache = study._storage.get_study_system_attrs(study._study_id).get("hssp_cache", {})
+    cached_subset_size = hssp_cache.get("subset_size")
+    cached_ref_point = np.array(hssp_cache.get("reference_point", np.zeros_like(reference_point)))
+    cached_indices = np.array(hssp_cache.get("rank_i_indices", []))
+    cached_loss_vals = np.array(hssp_cache.get("rank_i_loss_vals", []))
+
+    if (
+        subset_size == cached_subset_size
+        and "selected_indices" in hssp_cache
+        and np.allclose(cached_ref_point, reference_point)
+        and np.array_equal(cached_indices, rank_i_indices)
+        and cached_loss_vals.shape == rank_i_loss_vals.shape
+        and np.allclose(cached_loss_vals, rank_i_loss_vals)
+    ):
+        return np.asarray(hssp_cache["selected_indices"])
+
+    hssp_cache = {
+        "rank_i_loss_vals": rank_i_loss_vals.tolist(),
+        "rank_i_indices": rank_i_indices.tolist(),
+        "subset_size": subset_size,
+        "reference_point": reference_point.tolist(),
+    }
+    selected_indices = _solve_hssp(rank_i_loss_vals, rank_i_indices, subset_size, reference_point)
+    hssp_cache["selected_indices"] = selected_indices.tolist()
+    study._storage.set_study_system_attr(study._study_id, key="hssp_cache", value=hssp_cache)
+    return selected_indices
+
+
 class TPESampler(BaseSampler):
     """Sampler using TPE (Tree-structured Parzen Estimator) algorithm.
 
@@ -712,8 +747,12 @@ def _split_complete_trials_multi_objective(
         need_tiebreak = nondomination_ranks == last_rank_before_tiebreak + 1
         rank_i_lvals = lvals[need_tiebreak]
         subset_size = n_below - indices_below.size
-        selected_indices = _solve_hssp(
-            rank_i_lvals, indices[need_tiebreak], subset_size, _get_reference_point(rank_i_lvals)
+        selected_indices = _solve_hssp_with_cache(
+            study,
+            rank_i_lvals,
+            indices[need_tiebreak],
+            subset_size,
+            _get_reference_point(rank_i_lvals),
         )
         indices_below = np.append(indices_below, selected_indices)
 
