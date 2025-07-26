@@ -33,7 +33,6 @@
 
 from __future__ import annotations
 
-import functools
 import math
 import sys
 
@@ -45,11 +44,13 @@ from optuna.samplers._tpe._erf import ndtr_negative as numpy_ndtr_negative
 
 _norm_pdf_logC = 0.5 * math.log(2 * math.pi)
 _ndtri_exp_approx_C = math.sqrt(3) / math.pi
+_log_2 = math.log(2)
+_sqrt_2 = 2**0.5
 
 
 def _log_ndtr_negative_single(a: float) -> float:
     if a > -20:
-        return math.log(0.5 * (math.erfc(-a / 2**0.5) if a < -1 else 1 + math.erf(a / 2**0.5)))
+        return math.log(0.5 * (math.erfc(-a / _sqrt_2) if a < -1 else 1 + math.erf(a / _sqrt_2)))
 
     log_LHS = -0.5 * a**2 - math.log(-a) - _norm_pdf_logC
     last_total = 0.0
@@ -79,46 +80,31 @@ def _log_ndtr_negative(a: np.ndarray) -> np.ndarray:
 
 def _ndtr_negative(a: np.ndarray) -> np.ndarray:
     if a.size < 2000:
-        return 0.5 * (1 + np.asarray([math.erf(v) for v in a.ravel() / 2**0.5])).reshape(a.shape)
-    
+        return 0.5 * (1 + np.asarray([math.erf(v) for v in a.ravel() / _sqrt_2])).reshape(a.shape)
+
     return numpy_ndtr_negative(a)
 
 
 def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Log of Gaussian probability mass within an interval"""
-
+    """
+    Log of Gaussian probability mass within an interval of [a, b]. Calculations in right tail are
+    inaccurate, so we'll exploit the symmetry and work only in the left tail. The central part
+    where `a <= 0 <= b` is handled separately. The central part was previously implemented as
+    logaddexp(_log_gauss_mass(a, 0) + _log_gauss_mass(0, b)), but as the result goes to one,
+    catastrophic cancellation occurs. To avoid this, we use an alternative formulation.
+    """
     assert a.shape == b.shape
-    # Calculations in right tail are inaccurate, so we'll exploit the
-    # symmetry and work only in the left tail
     right_inds = np.nonzero(a > 0)
     a[right_inds], b[right_inds] = -b[right_inds], -a[right_inds]
-    left_inds = np.nonzero(b <= 0)
-    central_inds = np.nonzero(b > 0)
-
-    def mass_case_left(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        log_ndtr_b = _log_ndtr_negative(b)
-        log_ndtr_a = _log_ndtr_negative(a)
-        return log_ndtr_b + np.log1p(-np.exp(log_ndtr_a - log_ndtr_b))
-
-    def mass_case_central(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        # Previously, this was implemented as:
-        # left_mass = mass_case_left(a, 0)
-        # right_mass = mass_case_right(0, b)
-        # return _log_sum(left_mass, right_mass)
-        # Catastrophic cancellation occurs as np.exp(log_mass) approaches 1.
-        # Correct for this with an alternative formulation.
-        # We're not concerned with underflow here: if only one term
-        # underflows, it was insignificant; if both terms underflow,
-        # the result can't accurately be represented in logspace anyway
-        # because sc.log1p(x) ~ x for small x.
-        return np.log1p(-_ndtr_negative(a) - _ndtr_negative(-b))
-
-    # _lazyselect not working; don't care to debug it
     out = np.empty_like(a)
-    if left_inds[0].size:
-        out[left_inds] = mass_case_left(a[left_inds], b[left_inds])
-    if central_inds[0].size:
-        out[central_inds] = mass_case_central(a[central_inds], b[central_inds])
+    if (left_inds := np.nonzero(b <= 0))[0].size:
+        log_ndtr_b = _log_ndtr_negative(b[left_inds])
+        log_ndtr_a = _log_ndtr_negative(a[left_inds])
+        out[left_inds] = log_ndtr_b + np.log1p(-np.exp(log_ndtr_a - log_ndtr_b))
+    if (central_inds := np.nonzero(b > 0))[0].size:
+        out[central_inds] = np.log1p(
+            -_ndtr_negative(a[central_inds]) - _ndtr_negative(-b[central_inds])
+        )
     return out
 
 
@@ -166,7 +152,7 @@ def _ndtri_exp(y: np.ndarray) -> np.ndarray:
     """
     # z = log_ndtr(-x) --> z = log1p(-ndtr(x)) --> z = log1p(-exp(y)) --> z = log(-expm1(y)).
     # Since x becomes negative for y > -log(2), we use this formula and flip the sign later.
-    flipped = y > -math.log(2)
+    flipped = y > -_log_2
     z = np.where(flipped, np.log(-np.expm1(y)), y)  # z is always < -log(2) = -0.693...
     small_inds = np.nonzero(z < -5)
     moderate_inds = np.nonzero(z >= -5)
@@ -174,7 +160,7 @@ def _ndtri_exp(y: np.ndarray) -> np.ndarray:
     if small_inds[0].size:
         x[small_inds] = -np.sqrt(-2.0 * (z[small_inds] + _norm_pdf_logC))
     if moderate_inds[0].size:
-        x[moderate_inds] = -_ndtri_exp_approx_C * np.log(np.exp(-z[moderate_inds]) - 1)
+        x[moderate_inds] = -_ndtri_exp_approx_C * np.log(np.expm1(-z[moderate_inds]))
 
     for _ in range(100):
         log_ndtr_x = _log_ndtr_negative(x)
@@ -186,7 +172,8 @@ def _ndtri_exp(y: np.ndarray) -> np.ndarray:
         if np.all(np.abs(dx) < 1e-8 * np.abs(x)):
             # Equivalent to np.isclose with atol=0.0 and rtol=1e-8.
             break
-    return np.where(flipped, -x, x)
+    x[flipped] *= -1
+    return x
 
 
 def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarray:
