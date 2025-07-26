@@ -151,25 +151,23 @@ def _ndtri_exp(y: np.ndarray) -> np.ndarray:
         --> x \\simeq -sqrt(3) / pi * log(exp(-y) - 1).
     """
     # z = log_ndtr(-x) --> z = log1p(-ndtr(x)) --> z = log1p(-exp(y)) --> z = log(-expm1(y)).
-    # Since x becomes negative for y > -log(2), we use this formula and flip the sign later.
+    # Since x becomes positive for y > -log(2), we use this formula and flip the sign later.
     flipped = y > -_log_2
-    z = np.where(flipped, np.log(-np.expm1(y)), y)  # z is always < -log(2) = -0.693...
-    small_inds = np.nonzero(z < -5)
-    moderate_inds = np.nonzero(z >= -5)
+    y[flipped] = np.log(-np.expm1(y[flipped]))  # y is always < -log(2) = -0.693...
     x = np.empty_like(y)
-    if small_inds[0].size:
-        x[small_inds] = -np.sqrt(-2.0 * (z[small_inds] + _norm_pdf_logC))
-    if moderate_inds[0].size:
-        x[moderate_inds] = -_ndtri_exp_approx_C * np.log(np.expm1(-z[moderate_inds]))
+    if (small_inds := np.nonzero(y < -5))[0].size:
+        x[small_inds] = -np.sqrt(-2.0 * (y[small_inds] + _norm_pdf_logC))
+    if (moderate_inds := np.nonzero(y >= -5))[0].size:
+        x[moderate_inds] = -_ndtri_exp_approx_C * np.log(np.expm1(-y[moderate_inds]))
 
     for _ in range(100):
         log_ndtr_x = _log_ndtr_negative(x)
         # NOTE(nabenabe): Use exp(log_ndtr_x - norm_logpdf_x) instead of ndtr_x / norm_pdf_x for
         # numerical stability.
         norm_logpdf_x = -x**2 / 2.0 - _norm_pdf_logC
-        dx = (log_ndtr_x - z) * np.exp(log_ndtr_x - norm_logpdf_x)
+        dx = (log_ndtr_x - y) * np.exp(log_ndtr_x - norm_logpdf_x)
         x -= dx
-        if np.all(np.abs(dx) < 1e-8 * np.abs(x)):
+        if np.all(np.abs(dx) < 1e-8 * -x):  # NOTE: x is always negative.
             # Equivalent to np.isclose with atol=0.0 and rtol=1e-8.
             break
     x[flipped] *= -1
@@ -227,8 +225,5 @@ def logpdf(
     loc: np.ndarray | float = 0,
     scale: np.ndarray | float = 1,
 ) -> np.ndarray:
-    x = (x - loc) / scale
-    x, a, b = np.atleast_1d(x, a, b)
-    out = -x**2 / 2.0 - _norm_pdf_logC - _log_gauss_mass(a, b) - np.log(scale)
-    x, a, b = np.broadcast_arrays(x, a, b)
-    return out
+    z, a, b = np.atleast_1d((x - loc) / scale, a, b)
+    return -z**2 / 2.0 - _norm_pdf_logC - _log_gauss_mass(a, b) - np.log(scale)
