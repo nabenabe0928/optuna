@@ -54,6 +54,10 @@ def _unique_inverse_2d(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.nda
 
 
 def _log_gauss_mass_unique(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """
+    This function reduces the log Gaussian probability mass computation by avoiding the
+    duplicated evaluations using the np.unique_inverse(...) equivalent operation.
+    """
     a_uniq, b_uniq, inv = _unique_inverse_2d(a.ravel(), b.ravel())
     return _truncnorm._log_gauss_mass(a_uniq, b_uniq)[inv].reshape(a.shape)
 
