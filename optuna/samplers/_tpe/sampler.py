@@ -60,10 +60,9 @@ def default_weights(x: int) -> np.ndarray:
     elif x < 25:
         return np.ones(x)
     else:
-        weights = np.empty(x, dtype=float)
-        weights[-25:] = 1.0
-        weights[:-25] = np.linspace(1.0 / x, 1.0, num=x - 25)
-        return weights
+        ramp = np.linspace(1.0 / x, 1.0, num=x - 25)
+        flat = np.ones(25)
+        return np.concatenate([ramp, flat], axis=0)
 
 
 class TPESampler(BaseSampler):

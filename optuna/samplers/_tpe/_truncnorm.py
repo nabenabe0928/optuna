@@ -98,7 +98,7 @@ def _log_ndtr_single(a: float) -> float:
 
 def _log_ndtr_negative(a: np.ndarray) -> np.ndarray:
     if a.size < 300:
-        return np.asarray([_log_ndtr_single(v) for v in a.ravel()])
+        return np.asarray([_log_ndtr_single(v) for v in a.ravel()]).reshape(a.shape)
 
     return numpy_log_ndtr_negative(a)
 
@@ -222,19 +222,19 @@ def _ndtri_exp(y: np.ndarray) -> np.ndarray:
     # Since x becomes negative for y > -log(2), we use this formula and flip the sign later.
     flipped = y > -math.log(2)
     z = np.where(flipped, np.log(-np.expm1(y)), y)  # z is always < -log(2) = -0.693...
-    case_small = z < -5
+    small_inds = np.nonzero(z < -5)
+    moderate_inds = np.nonzero(z >= -5)
     x = np.empty_like(y)
-    if (z_small := z[case_small]).size:
-        x[case_small] = -np.sqrt(-2.0 * (z_small + _norm_pdf_logC))
-    if (z_moderate := z[~case_small]).size:
-        x[~case_small] = -_ndtri_exp_approx_C * np.log(np.exp(-z_moderate) - 1)
+    if small_inds[0].size:
+        x[small_inds] = -np.sqrt(-2.0 * (z[small_inds] + _norm_pdf_logC))
+    if moderate_inds[0].size:
+        x[moderate_inds] = -_ndtri_exp_approx_C * np.log(np.exp(-z[moderate_inds]) - 1)
 
     for _ in range(100):
         log_ndtr_x = _log_ndtr_negative(x)
-        log_norm_pdf_x = _norm_logpdf(x)
-        # NOTE(nabenabe): Use exp(log_ndtr_x - log_norm_pdf_x) instead of ndtr_x / norm_pdf_x for
+        # NOTE(nabenabe): Use exp(log_ndtr_x - _norm_logpdf(x)) instead of ndtr_x / norm_pdf_x for
         # numerical stability.
-        dx = (log_ndtr_x - z) * np.exp(log_ndtr_x - log_norm_pdf_x)
+        dx = (log_ndtr_x - z) * np.exp(log_ndtr_x - _norm_logpdf(x))
         x -= dx
         if np.all(np.abs(dx) < 1e-8 * np.abs(x)):
             # Equivalent to np.isclose with atol=0.0 and rtol=1e-8.
@@ -259,30 +259,16 @@ def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarr
     """
     q, a, b = np.atleast_1d(q, a, b)
     q, a, b = np.broadcast_arrays(q, a, b)
-
-    case_left = a < 0
-    case_right = ~case_left
     log_mass = _log_gauss_mass(a, b)
-    def ppf_left(q: np.ndarray, a: np.ndarray, b: np.ndarray, log_mass: np.ndarray) -> np.ndarray:
-        log_Phi_x = _log_sum(_log_ndtr_negative(a), np.log(q) + log_mass)
-        return _ndtri_exp(log_Phi_x)
-
-    def ppf_right(q: np.ndarray, a: np.ndarray, b: np.ndarray, log_mass: np.ndarray) -> np.ndarray:
-        # NOTE(nabenabe): Since the numerical stability of log_ndtr is better in the left tail, we
-        # flip the side for a >= 0.
-        log_Phi_x = _log_sum(_log_ndtr_negative(-b), np.log1p(-q) + log_mass)
-        return -_ndtri_exp(log_Phi_x)
-
-    out = np.empty_like(q)
-    if (q_left := q[case_left]).size:
-        out[case_left] = ppf_left(q_left, a[case_left], b[case_left], log_mass[case_left])
-    if (q_right := q[case_right]).size:
-        out[case_right] = ppf_right(q_right, a[case_right], b[case_right], log_mass[case_right])
-
-    out[q == 0] = a[q == 0]
-    out[q == 1] = b[q == 1]
-    out[a == b] = math.nan
-    return out
+    right_inds = np.nonzero(a >= 0)
+    a[right_inds] = -b[right_inds]
+    q[right_inds] = 1 - q[right_inds]
+    x = _ndtri_exp(_log_sum(_log_ndtr_negative(a), np.log(q) + log_mass))
+    x[right_inds] *= -1
+    # out[q == 0] = a[q == 0]
+    # out[q == 1] = b[q == 1]
+    # out[a == b] = math.nan
+    return x
 
 
 def rvs(
@@ -313,6 +299,6 @@ def logpdf(
     x, a, b = np.atleast_1d(x, a, b)
     out = _norm_logpdf(x) - _log_gauss_mass(a, b) - np.log(scale)
     x, a, b = np.broadcast_arrays(x, a, b)
-    out[(x < a) | (b < x)] = -np.inf
-    out[a == b] = math.nan
+    # out[(x < a) | (b < x)] = -np.inf
+    # out[a == b] = math.nan
     return out
