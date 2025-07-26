@@ -50,7 +50,7 @@ def _calculate_numerical_distributions(
     minsigma = domain_ranges / min(100.0, 1.0 + len(mus)) if consider_magic_clip else EPS
     if multivariate:
         C_amise = -1 / (search_space_dim + 4)
-        sigmas = np.broadcast_to(0.2 * n_trials ** C_amise * domain_ranges, (n_trials, dim))
+        sigmas = np.broadcast_to(0.2 * n_trials**C_amise * domain_ranges, (n_trials, dim))
         return mus, np.vstack([np.clip(sigmas, minsigma, domain_ranges), domain_ranges])
     order = np.argsort(mus, axis=0)
     sorted_mus = np.take_along_axis(mus, order, axis=0)
@@ -118,12 +118,14 @@ class _ParzenEstimator:
             #     for i, param in enumerate(search_space)
             # ],
             distributions=[
-                _BatchedTruncNormDistributions(
-                    mus[:, i], sigmas[:, i], dist.low, dist.high
-                ) if dist.step is None
-                else _BatchedDiscreteTruncNormDistributions(
-                    mus[:, i], sigmas[:, i], dist.low, dist.high, dist.step
-                ) for i, dist in enumerate(search_space.values())
+                (
+                    _BatchedTruncNormDistributions(mus[:, i], sigmas[:, i], dist.low, dist.high)
+                    if dist.step is None
+                    else _BatchedDiscreteTruncNormDistributions(
+                        mus[:, i], sigmas[:, i], dist.low, dist.high, dist.step
+                    )
+                )
+                for i, dist in enumerate(search_space.values())
             ],
         )
 

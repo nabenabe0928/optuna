@@ -473,7 +473,11 @@ class TPESampler(BaseSampler):
                     # TODO: Categorical
                     values[i].append(trial.params[param_name])
         values_array = np.asarray(values)
-        log_inds = [i for i, dist in enumerate(search_space) if isinstance(dist, (IntDistribution, FloatDistribution)) and dist.log]
+        log_inds = [
+            i
+            for i, dist in enumerate(search_space)
+            if isinstance(dist, (IntDistribution, FloatDistribution)) and dist.log
+        ]
         values_array[log_inds] = np.log(values_array[log_inds])
         return {k: v for k, v in zip(search_space, values_array)}
 

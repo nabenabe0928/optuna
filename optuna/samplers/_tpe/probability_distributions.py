@@ -69,8 +69,12 @@ class _MixtureOfProductDistribution(NamedTuple):
     def sample(self, rng: np.random.RandomState, batch_size: int) -> np.ndarray:
         active_indices = rng.choice(len(self.weights), p=self.weights, size=batch_size)
 
-        active_mus = np.concatenate([d.mu[active_indices, np.newaxis] for d in self.distributions], axis=1)
-        active_sigmas = np.concatenate([d.sigma[active_indices, np.newaxis] for d in self.distributions], axis=1)
+        active_mus = np.concatenate(
+            [d.mu[active_indices, np.newaxis] for d in self.distributions], axis=1
+        )
+        active_sigmas = np.concatenate(
+            [d.sigma[active_indices, np.newaxis] for d in self.distributions], axis=1
+        )
         lows = np.array([d.low for d in self.distributions])
         highs = np.array([d.high for d in self.distributions])
         steps = np.array([getattr(d, "step", 0.0) for d in self.distributions])
@@ -83,7 +87,9 @@ class _MixtureOfProductDistribution(NamedTuple):
         )
         disc_inds = np.nonzero(steps != 0.0)[0]
         ret[:, disc_inds] = np.clip(
-            lows[disc_inds] + np.round((ret[:, disc_inds] - lows[disc_inds]) / steps[disc_inds]) * steps[disc_inds],
+            lows[disc_inds]
+            + np.round((ret[:, disc_inds] - lows[disc_inds]) / steps[disc_inds])
+            * steps[disc_inds],
             lows[disc_inds],
             highs[disc_inds],
         )

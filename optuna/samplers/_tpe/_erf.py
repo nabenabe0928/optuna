@@ -16,15 +16,8 @@
 
 from __future__ import annotations
 
-import math
-from typing import TYPE_CHECKING
-
 import numpy as np
 from numpy.polynomial import Polynomial
-
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 
 # TODO(nabenabe): Rename this file to ndtr.py.
@@ -104,6 +97,9 @@ sb6 = 4.74528541206955367215e02
 sb7 = -2.24409524465858183362e01
 sb = Polynomial([1, sb1, sb2, sb3, sb4, sb5, sb6, sb7])
 
+_log_2 = np.log(2).item()
+_bin_boundaries = np.array([[0.84375], [1.25], [1 / 0.35]])
+
 
 def _ndtr_negative_non_big(x: np.ndarray) -> np.ndarray:
     """
@@ -120,7 +116,7 @@ def _ndtr_negative_non_big(x: np.ndarray) -> np.ndarray:
     so on. As a=0.84375, i.e., x = -1.1879..., is the closest point to -1, we use it as the
     switching point.
 
-    NOTE(nabenabe): Our switching point is also fine numerically because erf(-1.1879... / sqrt(2)) 
+    NOTE(nabenabe): Our switching point is also fine numerically because erf(-1.1879... / sqrt(2))
     = erf(-0.84375) = -0.767..., which is not smaller than -0.9 and hence does not cause underflow.
     To illustrate what I mean,, let's assume a floating number can express only up to 6 digits.
         When erf(z) is -9.12345e-1, 1 + erf(z) is 1e-1 - 1.2345e-2.
@@ -133,9 +129,7 @@ def _ndtr_negative_non_big(x: np.ndarray) -> np.ndarray:
     """
     assert len(x.shape) == 1, "Input must be a 1D array."
     # NOTE(nabenabe): Binning is much quicker than creating individual bool arrays.
-    bin_inds = np.count_nonzero(
-        (a := x / -2**0.5) >= [[0.84375], [1.25], [1 / 0.35]], axis=0
-    )
+    bin_inds = np.count_nonzero((a := x / -(2**0.5)) >= _bin_boundaries, axis=0)
     out = np.empty_like(x)
     if (target_inds := np.nonzero(bin_inds == 0)[0]).size:  # Small1: a < 0.84375
         # Compute 1 - erf(a) for this range. Use erfc(a) for the other ranges.
@@ -182,9 +176,7 @@ def _log_ndtr_negative(x: np.ndarray) -> np.ndarray:
     """
     assert len(x.shape) == 1, "Input must be a 1D array."
     # NOTE(nabenabe): Binning is much quicker than creating individual bool arrays.
-    bin_inds = np.count_nonzero(
-        (a := x / -2**0.5) >= [[0.84375], [1.25], [1 / 0.35]], axis=0
-    )
+    bin_inds = np.count_nonzero((a := x / -(2**0.5)) >= _bin_boundaries, axis=0)
     out = np.empty_like(x)
     # We use the same piece-wise approximation as in _ndtr_negative_non_big.
     # The only difference is that we use med2 for even big values.
@@ -199,7 +191,7 @@ def _log_ndtr_negative(x: np.ndarray) -> np.ndarray:
         # The computation is accurate for even big a.
         u = a[target_inds]
         out[target_inds] = -(z := u * u) - 0.5625 + rb(s := 1 / z) / sb(s) - np.log(u)
-    return out - math.log(2)
+    return out - _log_2
 
 
 def log_ndtr_negative(x: np.ndarray) -> np.ndarray:

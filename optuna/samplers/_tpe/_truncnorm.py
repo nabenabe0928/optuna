@@ -164,7 +164,7 @@ def _ndtri_exp(y: np.ndarray) -> np.ndarray:
         log_ndtr_x = _log_ndtr_negative(x)
         # NOTE(nabenabe): Use exp(log_ndtr_x - norm_logpdf_x) instead of ndtr_x / norm_pdf_x for
         # numerical stability.
-        norm_logpdf_x = -x**2 / 2.0 - _norm_pdf_logC
+        norm_logpdf_x = -(x**2) / 2.0 - _norm_pdf_logC
         dx = (log_ndtr_x - y) * np.exp(log_ndtr_x - norm_logpdf_x)
         x -= dx
         if np.all(np.abs(dx) < 1e-8 * -x):  # NOTE: x is always negative.
@@ -226,4 +226,4 @@ def logpdf(
     scale: np.ndarray | float = 1,
 ) -> np.ndarray:
     z, a, b = np.atleast_1d((x - loc) / scale, a, b)
-    return -z**2 / 2.0 - _norm_pdf_logC - _log_gauss_mass(a, b) - np.log(scale)
+    return -(z**2) / 2.0 - _norm_pdf_logC - _log_gauss_mass(a, b) - np.log(scale)
