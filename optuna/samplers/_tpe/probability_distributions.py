@@ -58,48 +58,6 @@ def _log_gauss_mass_unique(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return _truncnorm._log_gauss_mass(a_uniq, b_uniq)[inv].reshape(a.shape)
 
 
-def _log_pdf_continuous(x: np.ndarray, dists: list[_BatchedTruncNormDistributions]) -> np.ndarray:
-    # x.shape = (batch_size, dim).
-    lows = np.asarray([d.low for d in dists])
-    highs = np.asarray([d.high for d in dists])
-    # {mus, sigmas}.shape = (1, n_kernels, dim).
-    mus = np.asarray([d.mu for d in dists]).T[np.newaxis]
-    sigmas = np.asarray([d.sigma for d in dists]).T[np.newaxis]
-    return _truncnorm.logpdf(
-        x=x[:, np.newaxis],
-        a=(lows - mus) / sigmas,
-        b=(highs - mus) / sigmas,
-        loc=mus,
-        scale=sigmas,
-    ).sum(axis=-1)
-
-
-def _log_pdf_discrete(
-    x: np.ndarray, dists: list[_BatchedDiscreteTruncNormDistributions]
-) -> np.ndarray:
-    if len(dists) == 0:
-        return np.asarray(0.0)
-
-    # x.shape = (batch_size, dim) := (B, D).
-    # {mu, sigma}.shape = (1, n_kernels, dim) := (1, N, D).
-    n_kernels = len(dists[0].mu)
-    res = np.zeros((len(x), n_kernels), dtype=float)
-    for i, d in enumerate(dists):
-        # NOTE(nabenabe): vectorization --> log_gauss_mass_unique is also possible, but it costs
-        # O(NBD log NBD) while the for loop costs O(D * (B log B + N log N)).
-        xi_uniq, xi_inv = np.unique(x[:, i], return_inverse=True)
-        mu_uniq, sigma_uniq, mu_sigma_inv = _unique_inverse_2d(d.mu, d.sigma)
-        res += _log_gauss_mass_unique(
-            (xi_uniq[..., np.newaxis] - d.step / 2 - mu_uniq) / sigma_uniq,
-            (xi_uniq[..., np.newaxis] + d.step / 2 - mu_uniq) / sigma_uniq,
-        )[np.ix_(xi_inv, mu_sigma_inv)]
-        res -= _truncnorm._log_gauss_mass(
-            (d.low - d.step / 2 - mu_uniq) / sigma_uniq,
-            (d.high + d.step / 2 - mu_uniq) / sigma_uniq,
-        )[mu_sigma_inv]
-    return res
-
-
 class _MixtureOfProductDistribution(NamedTuple):
     weights: np.ndarray
     distributions: list[_BatchedDistributions]
