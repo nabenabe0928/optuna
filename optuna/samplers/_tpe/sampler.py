@@ -47,11 +47,11 @@ _logger = get_logger(__name__)
 
 
 def default_gamma(x: int) -> int:
-    return min(int(math.ceil(0.1 * x)), 25)
+    return min(math.ceil(0.1 * x), 25)
 
 
 def hyperopt_default_gamma(x: int) -> int:
-    return min(int(math.ceil(0.25 * x**0.5)), 25)
+    return min(math.ceil(0.25 * x**0.5), 25)
 
 
 def default_weights(x: int) -> np.ndarray:
