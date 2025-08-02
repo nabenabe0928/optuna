@@ -102,6 +102,8 @@ def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         log_ndtr_a = _log_ndtr_negative(a[left_inds])
         out[left_inds] = log_ndtr_b + np.log1p(-np.exp(log_ndtr_a - log_ndtr_b))
     if (central_inds := np.nonzero(b > 0))[0].size:
+        # NOTE(nabe): The following is numerically more stable, but slower, so we do not use it.
+        # out[central_inds] = np.log1p(-np.exp(np.logaddexp(_log_ndtr(-b), _log_ndtr(a))))
         out[central_inds] = np.log1p(
             -_ndtr_negative(a[central_inds]) - _ndtr_negative(-b[central_inds])
         )
