@@ -62,12 +62,42 @@ def _log_gauss_mass_unique(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return _truncnorm._log_gauss_mass(a_uniq, b_uniq)[inv].reshape(a.shape)
 
 
+def _log_standard_norm_pdf(z: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return -(z**2) / 2.0 - _truncnorm._norm_pdf_logC - _truncnorm._log_gauss_mass(a, b)
+
+
 class _MixtureOfProductDistribution(NamedTuple):
     weights: np.ndarray
     distributions: list[_BatchedDistributions]
 
     def sample(self, rng: np.random.RandomState, batch_size: int) -> np.ndarray:
         active_indices = rng.choice(len(self.weights), p=self.weights, size=batch_size)
+
+        active_mus = np.concatenate(
+            [d.mu[active_indices, np.newaxis] for d in self.distributions], axis=1
+        )
+        active_sigmas = np.concatenate(
+            [d.sigma[active_indices, np.newaxis] for d in self.distributions], axis=1
+        )
+        lows = np.array([d.low for d in self.distributions])
+        highs = np.array([d.high for d in self.distributions])
+        steps = np.array([getattr(d, "step", 0.0) for d in self.distributions])
+        ret = _truncnorm.rvs(
+            a=(lows - steps / 2 - active_mus) / active_sigmas,
+            b=(highs + steps / 2 - active_mus) / active_sigmas,
+            loc=active_mus,
+            scale=active_sigmas,
+            random_state=rng,
+        )
+        disc_inds = np.nonzero(steps != 0.0)[0]
+        ret[:, disc_inds] = np.clip(
+            lows[disc_inds]
+            + np.round((ret[:, disc_inds] - lows[disc_inds]) / steps[disc_inds])
+            * steps[disc_inds],
+            lows[disc_inds],
+            highs[disc_inds],
+        )
+        return ret
 
         ret = np.empty((batch_size, len(self.distributions)), dtype=np.float64)
         for i, d in enumerate(self.distributions):
@@ -137,13 +167,11 @@ class _MixtureOfProductDistribution(NamedTuple):
         if len(cont_inds):
             mus_cont = np.asarray([d.mu for d in cont_dists]).T
             sigmas_cont = np.asarray([d.sigma for d in cont_dists]).T
-            weighted_log_pdf += _truncnorm.logpdf(
-                x[:, np.newaxis, cont_inds],
-                a=(np.asarray([d.low for d in cont_dists]) - mus_cont) / sigmas_cont,
-                b=(np.asarray([d.high for d in cont_dists]) - mus_cont) / sigmas_cont,
-                loc=mus_cont,
-                scale=sigmas_cont,
-            ).sum(axis=-1)
+            weighted_log_pdf += _log_standard_norm_pdf(
+                (x[:, np.newaxis, cont_inds] - mus_cont) / sigmas_cont,
+                (np.asarray([d.low for d in cont_dists]) - mus_cont) / sigmas_cont,
+                (np.asarray([d.high for d in cont_dists]) - mus_cont) / sigmas_cont,
+            ).sum(axis=-1) - np.log(sigmas_cont).sum(axis=-1)
 
         weighted_log_pdf += np.log(self.weights[np.newaxis])
         max_ = weighted_log_pdf.max(axis=1)

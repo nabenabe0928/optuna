@@ -33,55 +33,26 @@
 
 from __future__ import annotations
 
-import functools
 import math
 import sys
 
 import numpy as np
 
-from optuna.samplers._tpe._erf import erf
+from optuna.samplers._tpe._erf import log_ndtr_negative as numpy_log_ndtr_negative
+from optuna.samplers._tpe._erf import ndtr_negative as numpy_ndtr_negative
 
 
-_norm_pdf_C = math.sqrt(2 * math.pi)
-_norm_pdf_logC = math.log(_norm_pdf_C)
+_norm_pdf_logC = 0.5 * math.log(2 * math.pi)
 _ndtri_exp_approx_C = math.sqrt(3) / math.pi
+_log_2 = math.log(2)
+_sqrt_2 = 2**0.5
 
 
-def _log_sum(log_p: np.ndarray, log_q: np.ndarray) -> np.ndarray:
-    return np.logaddexp(log_p, log_q)
-
-
-def _log_diff(log_p: np.ndarray, log_q: np.ndarray) -> np.ndarray:
-    return log_p + np.log1p(-np.exp(log_q - log_p))
-
-
-@functools.lru_cache(1000)
-def _ndtr_single(a: float) -> float:
-    x = a / 2**0.5
-
-    if x < -1 / 2**0.5:
-        y = 0.5 * math.erfc(-x)
-    elif x < 1 / 2**0.5:
-        y = 0.5 + 0.5 * math.erf(x)
-    else:
-        y = 1.0 - 0.5 * math.erfc(x)
-
-    return y
-
-
-def _ndtr(a: np.ndarray) -> np.ndarray:
-    # todo(amylase): implement erfc in _erf.py and use it for big |a| inputs.
-    return 0.5 + 0.5 * erf(a / 2**0.5)
-
-
-@functools.lru_cache(1000)
-def _log_ndtr_single(a: float) -> float:
-    if a > 6:
-        return -_ndtr_single(-a)
+def _log_ndtr_negative_single(a: float) -> float:
     if a > -20:
-        return math.log(_ndtr_single(a))
+        return math.log(0.5 * (math.erfc(-a / _sqrt_2) if a < -1 else 1 + math.erf(a / _sqrt_2)))
 
-    log_LHS = -0.5 * a**2 - math.log(-a) - 0.5 * math.log(2 * math.pi)
+    log_LHS = -0.5 * a**2 - math.log(-a) - _norm_pdf_logC
     last_total = 0.0
     right_hand_side = 1.0
     numerator = 1.0
@@ -89,7 +60,6 @@ def _log_ndtr_single(a: float) -> float:
     denom_cons = 1 / a**2
     sign = 1
     i = 0
-
     while abs(last_total - right_hand_side) > sys.float_info.epsilon:
         i += 1
         last_total = right_hand_side
@@ -101,54 +71,46 @@ def _log_ndtr_single(a: float) -> float:
     return log_LHS + math.log(right_hand_side)
 
 
-def _log_ndtr(a: np.ndarray) -> np.ndarray:
-    return np.frompyfunc(_log_ndtr_single, 1, 1)(a).astype(float)
+def _log_ndtr_negative(a: np.ndarray) -> np.ndarray:
+    if a.size < 300:
+        return np.asarray([_log_ndtr_negative_single(v) for v in a.ravel()]).reshape(a.shape)
+
+    return numpy_log_ndtr_negative(a)
 
 
-def _norm_logpdf(x: np.ndarray) -> np.ndarray:
-    return -(x**2) / 2.0 - _norm_pdf_logC
+def _ndtr_negative(a: np.ndarray) -> np.ndarray:
+    if a.size < 2000:
+        return 0.5 * (1 + np.asarray([math.erf(v) for v in a.ravel() / _sqrt_2])).reshape(a.shape)
+
+    return numpy_ndtr_negative(a)
 
 
 def _log_gauss_mass(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Log of Gaussian probability mass within an interval"""
-
-    # Calculations in right tail are inaccurate, so we'll exploit the
-    # symmetry and work only in the left tail
-    case_left = b <= 0
-    case_right = a > 0
-    case_central = ~(case_left | case_right)
-
-    def mass_case_left(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return _log_diff(_log_ndtr(b), _log_ndtr(a))
-
-    def mass_case_right(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return mass_case_left(-b, -a)
-
-    def mass_case_central(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        # Previously, this was implemented as:
-        # left_mass = mass_case_left(a, 0)
-        # right_mass = mass_case_right(0, b)
-        # return _log_sum(left_mass, right_mass)
-        # Catastrophic cancellation occurs as np.exp(log_mass) approaches 1.
-        # Correct for this with an alternative formulation.
-        # We're not concerned with underflow here: if only one term
-        # underflows, it was insignificant; if both terms underflow,
-        # the result can't accurately be represented in logspace anyway
-        # because sc.log1p(x) ~ x for small x.
-        return np.log1p(-_ndtr(a) - _ndtr(-b))
-
-    # _lazyselect not working; don't care to debug it
-    out = np.full_like(a, fill_value=np.nan, dtype=np.complex128)
-    if (a_left := a[case_left]).size:
-        out[case_left] = mass_case_left(a_left, b[case_left])
-    if (a_right := a[case_right]).size:
-        out[case_right] = mass_case_right(a_right, b[case_right])
-    if (a_central := a[case_central]).size:
-        out[case_central] = mass_case_central(a_central, b[case_central])
-    return np.real(out)  # discard ~0j
+    """
+    Log of Gaussian probability mass within an interval of [a, b]. Calculations in right tail are
+    inaccurate, so we'll exploit the symmetry and work only in the left tail. The central part
+    where `a <= 0 <= b` is handled separately. The central part was previously implemented as
+    logaddexp(_log_gauss_mass(a, 0) + _log_gauss_mass(0, b)), but as the result goes to one,
+    catastrophic cancellation occurs. To avoid this, we use an alternative formulation.
+    """
+    assert a.shape == b.shape
+    right_inds = np.nonzero(a > 0)
+    a[right_inds], b[right_inds] = -b[right_inds], -a[right_inds]
+    out = np.empty_like(a)
+    if (left_inds := np.nonzero(b <= 0))[0].size:
+        log_ndtr_b = _log_ndtr_negative(b[left_inds])
+        log_ndtr_a = _log_ndtr_negative(a[left_inds])
+        out[left_inds] = log_ndtr_b + np.log1p(-np.exp(log_ndtr_a - log_ndtr_b))
+    if (central_inds := np.nonzero(b > 0))[0].size:
+        # NOTE(nabe): The following is numerically more stable, but slower, so we do not use it.
+        # out[central_inds] = np.log1p(-np.exp(np.logaddexp(_log_ndtr(-b), _log_ndtr(a))))
+        out[central_inds] = np.log1p(
+            -_ndtr_negative(a[central_inds]) - _ndtr_negative(-b[central_inds])
+        )
+    return out
 
 
-def _ndtri_exp_single(y: float) -> float:
+def _ndtri_exp(y: np.ndarray) -> np.ndarray:
     """
     Use the Newton method to efficiently find the root.
 
@@ -190,35 +152,31 @@ def _ndtri_exp_single(y: float) -> float:
         --> log(exp(-y) - 1) \\simeq -pi * x / sqrt(3)
         --> x \\simeq -sqrt(3) / pi * log(exp(-y) - 1).
     """
-    if y > -sys.float_info.min:
-        return math.inf if y <= 0 else math.nan
-
-    if y > -1e-2:  # Case 1. abs(y) << 1.
-        u = -2.0 * math.log(-y)
-        x = math.sqrt(u - math.log(u))
-    elif y < -5:  # Case 2. abs(y) >> 1.
-        x = -math.sqrt(-2.0 * (y + _norm_pdf_logC))
-    else:  # Case 3. Moderate y.
-        x = -_ndtri_exp_approx_C * math.log(math.exp(-y) - 1)
+    # z = log_ndtr(-x) --> z = log1p(-ndtr(x)) --> z = log1p(-exp(y)) --> z = log(-expm1(y)).
+    # Since x becomes positive for y > -log(2), we use this formula and flip the sign later.
+    flipped = y > -_log_2
+    y[flipped] = np.log(-np.expm1(y[flipped]))  # y is always < -log(2) = -0.693...
+    x = np.empty_like(y)
+    if (small_inds := np.nonzero(y < -5))[0].size:
+        x[small_inds] = -np.sqrt(-2.0 * (y[small_inds] + _norm_pdf_logC))
+    if (moderate_inds := np.nonzero(y >= -5))[0].size:
+        x[moderate_inds] = -_ndtri_exp_approx_C * np.log(np.expm1(-y[moderate_inds]))
 
     for _ in range(100):
-        log_ndtr_x = _log_ndtr_single(x)
-        log_norm_pdf_x = -0.5 * x**2 - _norm_pdf_logC
-        # NOTE(nabenabe): Use exp(log_ndtr_x - log_norm_pdf_x) instead of ndtr_x / norm_pdf_x for
+        log_ndtr_x = _log_ndtr_negative(x)
+        # NOTE(nabenabe): Use exp(log_ndtr_x - norm_logpdf_x) instead of ndtr_x / norm_pdf_x for
         # numerical stability.
-        dx = (log_ndtr_x - y) * math.exp(log_ndtr_x - log_norm_pdf_x)
+        norm_logpdf_x = -(x**2) / 2.0 - _norm_pdf_logC
+        dx = (log_ndtr_x - y) * np.exp(log_ndtr_x - norm_logpdf_x)
         x -= dx
-        if abs(dx) < 1e-8 * abs(x):  # Equivalent to np.isclose with atol=0.0 and rtol=1e-8.
+        if np.all(np.abs(dx) < 1e-8 * -x):  # NOTE: x is always negative.
+            # Equivalent to np.isclose with atol=0.0 and rtol=1e-8.
             break
-
+    x[flipped] *= -1
     return x
 
 
-def _ndtri_exp(y: np.ndarray) -> np.ndarray:
-    return np.frompyfunc(_ndtri_exp_single, 1, 1)(y).astype(float)
-
-
-def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarray:
+def ppf(q: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """
     Compute the percent point function (inverse of cdf) at q of the given truncated Gaussian.
 
@@ -233,58 +191,29 @@ def ppf(q: np.ndarray, a: np.ndarray | float, b: np.ndarray | float) -> np.ndarr
     for the case where `a < 0`, i.e., `case_left`. For `case_right`, we flip the sign for the
     better numerical stability.
     """
-    q, a, b = np.atleast_1d(q, a, b)
-    q, a, b = np.broadcast_arrays(q, a, b)
-
-    case_left = a < 0
-    case_right = ~case_left
+    assert a.shape == b.shape == q.shape
     log_mass = _log_gauss_mass(a, b)
-
-    def ppf_left(q: np.ndarray, a: np.ndarray, b: np.ndarray, log_mass: np.ndarray) -> np.ndarray:
-        log_Phi_x = _log_sum(_log_ndtr(a), np.log(q) + log_mass)
-        return _ndtri_exp(log_Phi_x)
-
-    def ppf_right(q: np.ndarray, a: np.ndarray, b: np.ndarray, log_mass: np.ndarray) -> np.ndarray:
-        # NOTE(nabenabe): Since the numerical stability of log_ndtr is better in the left tail, we
-        # flip the side for a >= 0.
-        log_Phi_x = _log_sum(_log_ndtr(-b), np.log1p(-q) + log_mass)
-        return -_ndtri_exp(log_Phi_x)
-
-    out = np.empty_like(q)
-    if (q_left := q[case_left]).size:
-        out[case_left] = ppf_left(q_left, a[case_left], b[case_left], log_mass[case_left])
-    if (q_right := q[case_right]).size:
-        out[case_right] = ppf_right(q_right, a[case_right], b[case_right], log_mass[case_right])
-
-    return np.select([a == b, q == 1, q == 0], [math.nan, b, a], default=out)
+    right_inds = np.nonzero(a >= 0)
+    a[right_inds] = -b[right_inds]
+    log_q = np.log(q)
+    log_q[right_inds] = np.log1p(-q[right_inds])
+    x = _ndtri_exp(np.logaddexp(_log_ndtr_negative(a), log_mass + log_q))
+    x[right_inds] *= -1
+    return x
 
 
 def rvs(
     a: np.ndarray,
     b: np.ndarray,
-    loc: np.ndarray | float = 0,
-    scale: np.ndarray | float = 1,
+    loc: np.ndarray,
+    scale: np.ndarray,
     random_state: np.random.RandomState | None = None,
 ) -> np.ndarray:
     """
     This function generates random variates from a truncated normal distribution defined between
     `a` and `b` with the mean of `loc` and the standard deviation of `scale`.
     """
+    assert a.shape == b.shape == loc.shape == scale.shape
     random_state = random_state or np.random.RandomState()
-    size = np.broadcast(a, b, loc, scale).shape
-    quantiles = random_state.uniform(low=0, high=1, size=size)
+    quantiles = random_state.uniform(low=0, high=1, size=a.shape)
     return ppf(quantiles, a, b) * scale + loc
-
-
-def logpdf(
-    x: np.ndarray,
-    a: np.ndarray | float,
-    b: np.ndarray | float,
-    loc: np.ndarray | float = 0,
-    scale: np.ndarray | float = 1,
-) -> np.ndarray:
-    x = (x - loc) / scale
-    x, a, b = np.atleast_1d(x, a, b)
-    out = _norm_logpdf(x) - _log_gauss_mass(a, b) - np.log(scale)
-    x, a, b = np.broadcast_arrays(x, a, b)
-    return np.select([a == b, (x < a) | (x > b)], [np.nan, -np.inf], default=out)

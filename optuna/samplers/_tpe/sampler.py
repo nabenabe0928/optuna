@@ -17,6 +17,8 @@ from optuna._hypervolume import compute_hypervolume
 from optuna._hypervolume.hssp import _solve_hssp
 from optuna.distributions import BaseDistribution
 from optuna.distributions import CategoricalChoiceType
+from optuna.distributions import FloatDistribution
+from optuna.distributions import IntDistribution
 from optuna.logging import get_logger
 from optuna.samplers._base import _CONSTRAINTS_KEY
 from optuna.samplers._base import _INDEPENDENT_SAMPLING_WARNING_TEMPLATE
@@ -464,14 +466,20 @@ class TPESampler(BaseSampler):
     def _get_internal_repr(
         self, trials: list[FrozenTrial], search_space: dict[str, BaseDistribution]
     ) -> dict[str, np.ndarray]:
-        values: dict[str, list[float]] = {param_name: [] for param_name in search_space}
+        values: list[list[float]] = [[] for _ in search_space]
         for trial in trials:
             if search_space.keys() <= trial.params.keys():
-                for param_name in search_space:
-                    param = trial.params[param_name]
-                    distribution = trial.distributions[param_name]
-                    values[param_name].append(distribution.to_internal_repr(param))
-        return {k: np.asarray(v) for k, v in values.items()}
+                for i, param_name in enumerate(search_space):
+                    # TODO: Categorical
+                    values[i].append(trial.params[param_name])
+        values_array = np.asarray(values)
+        log_inds = [
+            i
+            for i, dist in enumerate(search_space)
+            if isinstance(dist, (IntDistribution, FloatDistribution)) and dist.log
+        ]
+        values_array[log_inds] = np.log(values_array[log_inds])
+        return {k: v for k, v in zip(search_space, values_array)}
 
     def _sample(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
