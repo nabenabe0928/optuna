@@ -17,25 +17,17 @@ def _solve_hssp_2d(
     n_trials = rank_i_loss_vals.shape[0]
     # rank_i_loss_vals is unique-lexsorted in solve_hssp.
     sorted_indices = np.arange(rank_i_loss_vals.shape[0])
-    sorted_loss_vals = rank_i_loss_vals.copy()
     # The diagonal points for each rectangular to calculate the hypervolume contributions.
     rect_diags = np.repeat(reference_point[np.newaxis, :], n_trials, axis=0)
     selected_indices = np.zeros(subset_size, dtype=int)
     for i in range(subset_size):
-        contribs = np.prod(rect_diags - sorted_loss_vals, axis=-1)
+        contribs = np.prod(rect_diags - rank_i_loss_vals[sorted_indices], axis=-1)
         max_index = np.argmax(contribs)
-        selected_indices[i] = rank_i_indices[sorted_indices[max_index]]
-        loss_vals = sorted_loss_vals[max_index].copy()
-
-        keep = np.ones(n_trials - i, dtype=bool)
-        keep[max_index] = False
+        selected_indices[i] = rank_i_indices[max_orig_index := sorted_indices[max_index]]
         # Remove the chosen point.
-        sorted_indices = sorted_indices[keep]
-        rect_diags = rect_diags[keep]
-        sorted_loss_vals = sorted_loss_vals[keep]
+        sorted_indices = sorted_indices[keep := sorted_indices != max_orig_index]
         # Update the diagonal points for each hypervolume contribution calculation.
-        rect_diags[:max_index, 0] = np.minimum(loss_vals[0], rect_diags[:max_index, 0])
-        rect_diags[max_index:, 1] = np.minimum(loss_vals[1], rect_diags[max_index:, 1])
+        rect_diags = np.minimum(rank_i_loss_vals[max_orig_index], rect_diags[keep])
 
     return selected_indices
 
