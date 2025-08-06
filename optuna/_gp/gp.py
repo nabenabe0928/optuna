@@ -163,6 +163,16 @@ class GPRegressor:
         var = cov_fx_fx - (cov_fx_fX * (cov_fx_fX @ self._cov_Y_Y_inv)).sum(dim=-1)
         return mean, torch.clamp(var, min=0.0)
 
+    def joint_posterior(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        assert (
+            self._cov_Y_Y_inv is not None and self._cov_Y_Y_inv_Y is not None
+        ), "Call cache_matrix before calling posterior."
+        cov_fx_fX = self.kernel(x[..., None, :], self._X_train)[..., 0, :]
+        cov_fx_fx = self.kernel_scale  # kernel(x, x) = kernel_scale
+        mean = cov_fx_fX @ self._cov_Y_Y_inv_Y
+        covar = cov_fx_fx - cov_fx_fX @ self._cov_Y_Y_inv @ cov_fx_fX
+        return mean, torch.clamp(covar, min=0.0)
+
     def marginal_log_likelihood(self) -> torch.Tensor:  # Scalar
         """
         This method computes the marginal log-likelihood of the kernel hyperparameters given the
