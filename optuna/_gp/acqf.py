@@ -218,6 +218,51 @@ class ConstrainedLogEI(BaseAcquisitionFunc):
         )
 
 
+class ValueAtRisk(BaseAcquisitionFunc):
+    def __init__(
+        self,
+        gpr: GPRegressor,
+        search_space: SearchSpace,
+        alpha: float,
+        n_input_noise_samples: int,
+        n_qmc_samples: int,
+        qmc_seed: int | None,
+        uniform_input_noise_ranges: np.ndarray | None = None,
+        gauss_input_noise_vars: np.ndarray | None = None,
+    ) -> None:
+        assert 0 <= alpha <= 1
+        assert uniform_input_noise_ranges is not None or gauss_input_noise_vars is not None
+        if uniform_input_noise_ranges is not None and gauss_input_noise_vars is not None:
+            raise ValueError(
+                "Only one of `uniform_input_noise_ranges` and `gauss_input_noise_vars` should be "
+                "provided."
+            )
+        self._gpr = gpr
+        self._alpha = alpha
+        rng = np.random.RandomState(qmc_seed)
+        seed = rng.random_integers(0, 2**31 - 1, size=1).item()
+        self._input_noise = _sample_from_normal_sobol(
+            dim=len(gpr.length_scales), n_samples=n_input_noise_samples, seed=seed
+        )
+        seed = rng.random_integers(0, 2**31 - 1, size=1).item()
+        self._fixed_samples = _sample_from_normal_sobol(
+            dim=n_input_noise_samples, n_samples=n_qmc_samples, seed=seed
+        )
+        super().__init__(gpr.length_scales, search_space)
+
+    def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
+        means, covar = self._gpr.joint_posterior(x[..., None, :] + self._input_noise)
+        L = torch.linalg.cholesky(covar)
+        posterior_samples = means[..., None, :] + self._fixed_samples @ L
+        topk_samples, _ = torch.topk(
+            posterior_samples.reshape(posterior_samples.shape[:-2], -1),
+            k=int(self._alpha * posterior_samples.size),
+            dim=-1,
+        )
+        # CVaR: torch.mean(topk_samples, dim=-1)
+        return topk_samples[..., -1]
+
+
 class LogEHVI(BaseAcquisitionFunc):
     def __init__(
         self,
