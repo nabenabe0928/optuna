@@ -170,8 +170,8 @@ class GPRegressor:
         cov_fx_fX = self.kernel(x[..., None, :], self._X_train)[..., 0, :]
         cov_fx_fx = self.kernel_scale  # kernel(x, x) = kernel_scale
         mean = cov_fx_fX @ self._cov_Y_Y_inv_Y
-        covar = cov_fx_fx - cov_fx_fX @ self._cov_Y_Y_inv @ cov_fx_fX
-        return mean, torch.clamp(covar, min=0.0)
+        covar = cov_fx_fx - cov_fx_fX @ self._cov_Y_Y_inv @ cov_fx_fX.transpose(-1, -2)
+        return mean, covar
 
     def marginal_log_likelihood(self) -> torch.Tensor:  # Scalar
         """
