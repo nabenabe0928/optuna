@@ -3,7 +3,6 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 import math
-from typing import cast
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -13,6 +12,9 @@ from optuna.study._multi_objective import _is_pareto_front
 
 
 if TYPE_CHECKING:
+    from typing import cast
+    from typing import Protocol
+
     import torch
 
     from optuna._gp.gp import GPRegressor
@@ -23,13 +25,22 @@ else:
     torch = _LazyImport("torch")
 
 
+class SobolGenerator(Protocol):
+    def __call__(self, dim: int, n_samples: int, seed: int | None) -> torch.Tensor:
+        raise NotImplementedError
+
+
+def _sample_from_sobol(dim: int, n_samples: int, seed: int | None) -> torch.Tensor:
+    return torch.quasirandom.SobolEngine(  # type: ignore[no-untyped-call]
+        dimension=dim, scramble=True, seed=seed
+    ).draw(n_samples, dtype=torch.float64)
+
+
 def _sample_from_normal_sobol(dim: int, n_samples: int, seed: int | None) -> torch.Tensor:
     # NOTE(nabenabe): Normal Sobol sampling based on BoTorch.
     # https://github.com/pytorch/botorch/blob/v0.13.0/botorch/sampling/qmc.py#L26-L97
     # https://github.com/pytorch/botorch/blob/v0.13.0/botorch/utils/sampling.py#L109-L138
-    sobol_samples = torch.quasirandom.SobolEngine(  # type: ignore[no-untyped-call]
-        dimension=dim, scramble=True, seed=seed
-    ).draw(n_samples, dtype=torch.float64)
+    sobol_samples = _sample_from_sobol(dim, n_samples, seed)
     samples = 2.0 * (sobol_samples - 0.5)  # The Sobol sequence in [-1, 1].
     # Inverse transform to standard normal (values to close to -1 or 1 result in infinity).
     return torch.erfinv(samples) * float(np.sqrt(2))
@@ -227,28 +238,50 @@ class ValueAtRisk(BaseAcquisitionFunc):
         n_input_noise_samples: int,
         n_qmc_samples: int,
         qmc_seed: int | None,
-        uniform_input_noise_ranges: np.ndarray | None = None,
-        gauss_input_noise_vars: np.ndarray | None = None,
+        uniform_input_noise_ranges: torch.Tensor | None = None,
+        gauss_input_noise_stdevs: torch.Tensor | None = None,
     ) -> None:
         assert 0 <= alpha <= 1
-        assert uniform_input_noise_ranges is not None or gauss_input_noise_vars is not None
-        if uniform_input_noise_ranges is not None and gauss_input_noise_vars is not None:
-            raise ValueError(
-                "Only one of `uniform_input_noise_ranges` and `gauss_input_noise_vars` should be "
-                "provided."
-            )
         self._gpr = gpr
         self._alpha = alpha
         rng = np.random.RandomState(qmc_seed)
-        seed = rng.random_integers(0, 2**31 - 1, size=1).item()
-        self._input_noise = _sample_from_normal_sobol(
-            dim=len(gpr.length_scales), n_samples=n_input_noise_samples, seed=seed
+        self._input_noise = self._sample_input_noise(
+            n_input_noise_samples, uniform_input_noise_ranges, gauss_input_noise_stdevs, rng
         )
         seed = rng.random_integers(0, 2**31 - 1, size=1).item()
         self._fixed_samples = _sample_from_normal_sobol(
             dim=n_input_noise_samples, n_samples=n_qmc_samples, seed=seed
         )
         super().__init__(gpr.length_scales, search_space)
+
+    @staticmethod
+    def _sample_input_noise(
+        n_input_noise_samples: int,
+        uniform_input_noise_ranges: torch.Tensor | None,
+        gauss_input_noise_stdevs: torch.Tensor | None,
+        rng: np.random.RandomState,
+    ) -> torch.Tensor:
+        seed = rng.random_integers(0, 2**31 - 1, size=1).item()
+
+        def _sample_input_noise(noise_params: torch.Tensor, gen: SobolGenerator) -> torch.Tensor:
+            dim = noise_params.size(0)
+            noisy_inds = torch.where(noise_params != 0.0)
+            input_noise = torch.zeros(size=(n_input_noise_samples, dim), dtype=torch.float64)
+            input_noise[noisy_inds] = (
+                gen(noisy_inds[0].size(0), n_input_noise_samples, seed) * noise_params[noisy_inds]
+            )
+            return input_noise
+
+        assert uniform_input_noise_ranges is not None or gauss_input_noise_stdevs is not None
+        if gauss_input_noise_stdevs is not None:
+            return _sample_input_noise(gauss_input_noise_stdevs, _sample_from_normal_sobol)
+        elif uniform_input_noise_ranges is not None:
+            return _sample_input_noise(uniform_input_noise_ranges, _sample_from_sobol)
+        else:
+            raise ValueError(
+                "Either `uniform_input_noise_ranges` or `gauss_input_noise_stdevs` "
+                "must be provided."
+            )
 
     def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
         means, covar = self._gpr.joint_posterior(x[..., None, :] + self._input_noise)
