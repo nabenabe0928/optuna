@@ -22,6 +22,7 @@ from optuna.trial import TrialState
 if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Sequence
+    from typing import Literal
 
     import torch
 
@@ -164,7 +165,11 @@ class GPSampler(BaseSampler):
         deterministic_objective: bool = False,
         constraints_func: Callable[[FrozenTrial], Sequence[float]] | None = None,
         warn_independent_sampling: bool = True,
+        uniform_input_noise_ranges: dict[str, float] | None = None,
+        normal_input_noise_stdevs: dict[str, float] | None = None,
     ) -> None:
+        self._uniform_input_noise_ranges = uniform_input_noise_ranges
+        self._normal_input_noise_stdevs = normal_input_noise_stdevs
         self._rng = LazyRandomState(seed)
         self._independent_sampler = independent_sampler or optuna.samplers.RandomSampler(seed=seed)
         self._intersection_search_space = optuna.search_space.IntersectionSearchSpace()
@@ -284,6 +289,83 @@ class GPSampler(BaseSampler):
         chosen_indices = self._rng.rng.choice(n_pareto_sols, size=size, replace=False)
         return pareto_params[chosen_indices]
 
+    def _get_value_at_risk(
+        self,
+        gpr: gp.GPRegressor,
+        internal_search_space: gp_search_space.SearchSpace,
+        search_space: dict[str, BaseDistribution],
+    ) -> acqf_module.ValueAtRisk:
+        if (
+            self._uniform_input_noise_ranges is not None
+            and self._normal_input_noise_stdevs is not None
+        ):
+            raise ValueError(
+                "Only one of `uniform_input_noise_ranges` and `normal_input_noise_stdevs` "
+                "can be specified."
+            )
+
+        def _get_scaled_input_noise_params(
+            input_noise_params: dict[str, float], noise_param_name: str
+        ) -> list[float]:
+            if not (input_noise_params.keys() <= search_space.keys()):
+                raise KeyError(
+                    f"param names in {noise_param_name} must be in {list(search_space.keys())}."
+                )
+            numerical_dists = (
+                optuna.distributions.FloatDistribution, optuna.distributions.IntDistribution
+            )
+            scaled_input_noise_params = torch.zeros(len(search_space), dtype=torch.float64)
+            for i, (param_name, dist) in enumerate(search_space.items()):
+                if param_name not in input_noise_params:
+                    continue
+                err_msg = f"Cannot add input noise to discrete parameter '{param_name}'."
+                if isinstance(
+                    dist, (
+                        optuna.distributions.CategoricalDistribution,
+                        optuna.distributions.IntDistribution,
+                    )
+                ):
+                    raise ValueError(err_msg)
+                assert isinstance(dist, optuna.distributions.FloatDistribution)
+                if dist.step is not None:
+                    raise ValueError(err_msg)
+                elif dist.log:
+                    raise ValueError(
+                        f"Cannot add input noise to log-scaled parameter '{param_name}'."
+                    )
+                input_noise_param = input_noise_params[param_name]
+                scaled_input_noise_params[i] = input_noise_param / (dist.high - dist.low)
+            return scaled_input_noise_params
+
+        if self._uniform_input_noise_ranges is not None:
+            scaled_input_noise_params = _get_scaled_input_noise_params(
+                self._uniform_input_noise_ranges, "uniform_input_noise_ranges"
+            )
+            return acqf_module.ValueAtRisk(
+                gpr=gpr,
+                search_space=internal_search_space,
+                alpha=0.95,
+                n_input_noise_samples=32,
+                n_qmc_samples=128,
+                qmc_seed=self._rng.rng.randint(1 << 30),
+                uniform_input_noise_ranges=scaled_input_noise_params,
+            )
+        elif self._normal_input_noise_stdevs is not None:
+            scaled_input_noise_params = _get_scaled_input_noise_params(
+                self._normal_input_noise_stdevs, "normal_input_noise_stdevs"
+            )
+            return acqf_module.ValueAtRisk(
+                gpr=gpr,
+                search_space=internal_search_space,
+                alpha=0.95,
+                n_input_noise_samples=32,
+                n_qmc_samples=128,
+                qmc_seed=self._rng.rng.randint(1 << 30),
+                input_noise_stdevs=scaled_input_noise_params,
+            )
+        else:
+            assert False, "Should not reach here."
+
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
     ) -> dict[str, Any]:
@@ -335,12 +417,21 @@ class GPSampler(BaseSampler):
         if self._constraints_func is None:
             if n_objectives == 1:
                 assert len(gprs_list) == 1
-                acqf = acqf_module.LogEI(
-                    gpr=gprs_list[0],
-                    search_space=internal_search_space,
-                    threshold=standardized_score_vals[:, 0].max(),
-                )
-                best_params = normalized_params[np.argmax(standardized_score_vals), np.newaxis]
+                if (
+                    self._uniform_input_noise_ranges is not None
+                    or self._normal_input_noise_stdevs is not None
+                ):
+                    acqf = self._get_value_at_risk(
+                        gprs_list[0], internal_search_space, search_space
+                    )
+                    best_params = None
+                else:
+                    acqf = acqf_module.LogEI(
+                        gpr=gprs_list[0],
+                        search_space=internal_search_space,
+                        threshold=standardized_score_vals[:, 0].max(),
+                    )
+                    best_params = normalized_params[np.argmax(standardized_score_vals), np.newaxis]
             else:
                 acqf = acqf_module.LogEHVI(
                     gpr_list=gprs_list,

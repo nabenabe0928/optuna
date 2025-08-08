@@ -19,15 +19,14 @@ if TYPE_CHECKING:
 
     from optuna._gp.gp import GPRegressor
     from optuna._gp.search_space import SearchSpace
+
+    class SobolGenerator(Protocol):
+        def __call__(self, dim: int, n_samples: int, seed: int | None) -> torch.Tensor:
+            raise NotImplementedError
 else:
     from optuna._imports import _LazyImport
 
     torch = _LazyImport("torch")
-
-
-class SobolGenerator(Protocol):
-    def __call__(self, dim: int, n_samples: int, seed: int | None) -> torch.Tensor:
-        raise NotImplementedError
 
 
 def _sample_from_sobol(dim: int, n_samples: int, seed: int | None) -> torch.Tensor:
@@ -239,26 +238,26 @@ class ValueAtRisk(BaseAcquisitionFunc):
         n_qmc_samples: int,
         qmc_seed: int | None,
         uniform_input_noise_ranges: torch.Tensor | None = None,
-        gauss_input_noise_stdevs: torch.Tensor | None = None,
+        normal_input_noise_stdevs: torch.Tensor | None = None,
     ) -> None:
         assert 0 <= alpha <= 1
         self._gpr = gpr
         self._alpha = alpha
         rng = np.random.RandomState(qmc_seed)
         self._input_noise = self._sample_input_noise(
-            n_input_noise_samples, uniform_input_noise_ranges, gauss_input_noise_stdevs, rng
+            n_input_noise_samples, uniform_input_noise_ranges, normal_input_noise_stdevs, rng
         )
         seed = rng.random_integers(0, 2**31 - 1, size=1).item()
         self._fixed_samples = _sample_from_normal_sobol(
             dim=n_input_noise_samples, n_samples=n_qmc_samples, seed=seed
         )
-        super().__init__(gpr.length_scales, search_space)
+        super().__init__(length_scales=gpr.length_scales, search_space=search_space)
 
     @staticmethod
     def _sample_input_noise(
         n_input_noise_samples: int,
         uniform_input_noise_ranges: torch.Tensor | None,
-        gauss_input_noise_stdevs: torch.Tensor | None,
+        normal_input_noise_stdevs: torch.Tensor | None,
         rng: np.random.RandomState,
     ) -> torch.Tensor:
         seed = rng.random_integers(0, 2**31 - 1, size=1).item()
@@ -267,19 +266,19 @@ class ValueAtRisk(BaseAcquisitionFunc):
             dim = noise_params.size(0)
             noisy_inds = torch.where(noise_params != 0.0)
             input_noise = torch.zeros(size=(n_input_noise_samples, dim), dtype=torch.float64)
-            input_noise[noisy_inds] = (
+            input_noise[:, noisy_inds[0]] = (
                 gen(noisy_inds[0].size(0), n_input_noise_samples, seed) * noise_params[noisy_inds]
             )
             return input_noise
 
-        assert uniform_input_noise_ranges is not None or gauss_input_noise_stdevs is not None
-        if gauss_input_noise_stdevs is not None:
-            return _sample_input_noise(gauss_input_noise_stdevs, _sample_from_normal_sobol)
+        assert uniform_input_noise_ranges is not None or normal_input_noise_stdevs is not None
+        if normal_input_noise_stdevs is not None:
+            return _sample_input_noise(normal_input_noise_stdevs, _sample_from_normal_sobol)
         elif uniform_input_noise_ranges is not None:
             return _sample_input_noise(uniform_input_noise_ranges, _sample_from_sobol)
         else:
             raise ValueError(
-                "Either `uniform_input_noise_ranges` or `gauss_input_noise_stdevs` "
+                "Either `uniform_input_noise_ranges` or `normal_input_noise_stdevs` "
                 "must be provided."
             )
 
