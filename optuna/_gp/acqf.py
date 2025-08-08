@@ -287,8 +287,8 @@ class ValueAtRisk(BaseAcquisitionFunc):
         L = torch.linalg.cholesky(covar)
         posterior_samples = means[..., None, :] + self._fixed_samples @ L
         topk_samples, _ = torch.topk(
-            posterior_samples.reshape(posterior_samples.shape[:-2], -1),
-            k=int(self._alpha * posterior_samples.size),
+            posterior_samples.reshape(*posterior_samples.shape[:-2], -1),
+            k=int(self._alpha * posterior_samples.size(0)),
             dim=-1,
         )
         # CVaR: torch.mean(topk_samples, dim=-1)

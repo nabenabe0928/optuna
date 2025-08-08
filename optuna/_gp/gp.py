@@ -167,8 +167,9 @@ class GPRegressor:
         assert (
             self._cov_Y_Y_inv is not None and self._cov_Y_Y_inv_Y is not None
         ), "Call cache_matrix before calling posterior."
-        cov_fx_fX = self.kernel(x[..., None, :], self._X_train)[..., 0, :]
-        cov_fx_fx = self.kernel_scale  # kernel(x, x) = kernel_scale
+        # cov_fx_fX = self.kernel(x[..., None, :], self._X_train)[..., 0, :]
+        cov_fx_fX = self.kernel(x, self._X_train)
+        cov_fx_fx = self.kernel(x, x)
         mean = cov_fx_fX @ self._cov_Y_Y_inv_Y
         covar = cov_fx_fx - cov_fx_fX @ self._cov_Y_Y_inv @ cov_fx_fX.transpose(-1, -2)
         return mean, covar
