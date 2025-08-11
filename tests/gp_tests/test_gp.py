@@ -56,21 +56,21 @@ def test_warn_and_convert_inf_for_1d_array(values: np.ndarray, ans: np.ndarray) 
 
 
 @pytest.mark.parametrize(
-    "X, Y, is_categorical",
+    "X, Y, categorical_indices",
     [
         (
             np.array([[0.1, 0.2], [0.2, 0.3], [0.3, 0.1]]),
             np.array([1.0, 2.0, 3.0]),
-            np.array([False, False]),
+            np.array([], dtype=int),
         ),
         (
             np.array([[0.1, 0.2, 0.0], [0.2, 0.3, 1.0]]),
             np.array([1.0, 2.0]),
-            np.array([False, False, True]),
+            np.array([2], dtype=int),
         ),
-        (np.array([[1.0, 0.0], [0.0, 1.0]]), np.array([1.0, 2.0]), np.array([True, True])),
-        (np.array([[0.0]]), np.array([0.0]), np.array([True])),
-        (np.array([[0.0]]), np.array([0.0]), np.array([False])),
+        (np.array([[1.0, 0.0], [0.0, 1.0]]), np.array([1.0, 2.0]), np.array([0, 1], dtype=int)),
+        (np.array([[0.0]]), np.array([0.0]), np.array([0], dtype=int)),
+        (np.array([[0.0]]), np.array([0.0]), np.array([], dtype=int)),
     ],
 )
 @pytest.mark.parametrize("deterministic_objective", [True, False])
@@ -78,7 +78,7 @@ def test_warn_and_convert_inf_for_1d_array(values: np.ndarray, ans: np.ndarray) 
 def test_fit_kernel_params(
     X: np.ndarray,
     Y: np.ndarray,
-    is_categorical: np.ndarray,
+    categorical_indices: np.ndarray,
     deterministic_objective: bool,
     torch_set_grad_enabled: bool,
 ) -> None:
@@ -88,7 +88,7 @@ def test_fit_kernel_params(
         initial_gpr = GPRegressor(
             X_train=torch.from_numpy(X),
             y_train=torch.from_numpy(Y),
-            is_categorical=torch.from_numpy(is_categorical),
+            categorical_indices=torch.from_numpy(categorical_indices),
             inverse_squared_lengthscales=torch.ones(X.shape[1], dtype=torch.float64),
             kernel_scale=torch.tensor(1.0, dtype=torch.float64),
             noise_var=torch.tensor(1.0, dtype=torch.float64),
@@ -98,7 +98,7 @@ def test_fit_kernel_params(
         gpr = _fit_kernel_params(
             X=X,
             Y=Y,
-            is_categorical=is_categorical,
+            categorical_indices=categorical_indices,
             log_prior=log_prior,
             minimum_noise=minimum_noise,
             gpr_cache=initial_gpr,

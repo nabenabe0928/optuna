@@ -246,7 +246,6 @@ class GPSampler(BaseSampler):
             # Clear cache if the search space changes.
             self._constraints_gprs_cache_list = None
 
-        is_categorical = internal_search_space.is_categorical
         constraints_gprs = []
         constraints_threshold_list = []
         constraints_threshold_list = (-means / np.maximum(EPS, stds)).tolist()
@@ -259,7 +258,7 @@ class GPSampler(BaseSampler):
             gpr = gp.fit_kernel_params(
                 X=normalized_params,
                 Y=vals,
-                is_categorical=is_categorical,
+                categorical_indices=internal_search_space.categorical_indices,
                 log_prior=self._log_prior,
                 minimum_noise=self._minimum_noise,
                 gpr_cache=cache,
@@ -314,14 +313,13 @@ class GPSampler(BaseSampler):
 
         gprs_list = []
         n_objectives = standardized_score_vals.shape[-1]
-        is_categorical = internal_search_space.is_categorical
         for i in range(n_objectives):
             cache = self._gprs_cache_list[i] if self._gprs_cache_list is not None else None
             gprs_list.append(
                 gp.fit_kernel_params(
                     X=normalized_params,
                     Y=standardized_score_vals[:, i],
-                    is_categorical=is_categorical,
+                    categorical_indices=internal_search_space.categorical_indices,
                     log_prior=self._log_prior,
                     minimum_noise=self._minimum_noise,
                     gpr_cache=cache,

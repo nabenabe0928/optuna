@@ -32,7 +32,7 @@ def test_after_convergence(caplog: LogCaptureFixture) -> None:
     gpr = optuna_gp.fit_kernel_params(
         X=X[:, np.newaxis],
         Y=score_vals,
-        is_categorical=np.array([False]),
+        categorical_indices=np.array([], dtype=int),
         log_prior=prior.default_log_prior,
         minimum_noise=prior.DEFAULT_MINIMUM_NOISE_VAR,
         deterministic_objective=False,

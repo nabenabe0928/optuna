@@ -24,7 +24,7 @@ def verify_eval_acqf(x: np.ndarray, acqf: acqf_module.BaseAcquisitionFunc) -> No
 
 def get_gpr(y_train: np.ndarray) -> GPRegressor:
     gpr = GPRegressor(
-        is_categorical=torch.tensor([False, False]),
+        categorical_indices=torch.tensor([], dtype=torch.int32),
         X_train=torch.tensor([[0.1, 0.2], [0.2, 0.3], [0.3, 0.1]], dtype=torch.float64),
         y_train=torch.from_numpy(y_train),
         inverse_squared_lengthscales=torch.tensor([2.0, 3.0], dtype=torch.float64),

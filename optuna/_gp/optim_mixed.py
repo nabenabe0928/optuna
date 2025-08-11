@@ -173,7 +173,7 @@ def _local_search_discrete(
     # This is faster and better than the line search.
     MAX_INT_EXHAUSTIVE_SEARCH_PARAMS = 16
 
-    is_categorical = acqf.search_space.is_categorical[param_idx]
+    is_categorical = param_idx in acqf.search_space.categorical_indices
     if is_categorical or len(choices) <= MAX_INT_EXHAUSTIVE_SEARCH_PARAMS:
         return _exhaustive_search(acqf, initial_params, initial_fval, param_idx, choices)
     else:

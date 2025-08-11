@@ -12,9 +12,8 @@ cov_Y_Y_inv:
 cov_Y_Y_inv_Y: `cov_Y_Y_inv @ y` with the shape of (len(trials), ).
 max_Y: The maximum of Y (Note that we transform the objective values such that it is maximized.)
 d2: The squared distance between two points.
-is_categorical:
-    A boolean array with the shape of (len(params), ). If is_categorical[i] is True, the i-th
-    parameter is categorical.
+categorical_indices:
+    An index array that tells which parameters are categorical.
 """
 
 from __future__ import annotations
@@ -93,14 +92,14 @@ class Matern52Kernel(torch.autograd.Function):
 class GPRegressor:
     def __init__(
         self,
-        is_categorical: torch.Tensor,
+        categorical_indices: torch.Tensor,
         X_train: torch.Tensor,
         y_train: torch.Tensor,
         inverse_squared_lengthscales: torch.Tensor,  # (len(params), )
         kernel_scale: torch.Tensor,  # Scalar
         noise_var: torch.Tensor,  # Scalar
     ) -> None:
-        self._is_categorical = is_categorical
+        self._categorical_indices = categorical_indices
         self._X_train = X_train
         self._y_train = y_train
         self._cov_Y_Y_inv: torch.Tensor | None = None
@@ -138,8 +137,11 @@ class GPRegressor:
         categorical, d2(x1, x2)[i] = int(x1[i] != x2[i]).
         Note that the distance for categorical parameters is the Hamming distance.
         """
-        d2 = (X1[..., :, None, :] - X2[..., None, :, :]) ** 2
-        d2[..., self._is_categorical] = (d2[..., self._is_categorical] > 0.0).type(torch.float64)
+        d2 = (X1[..., None, :] - X2[..., None, :, :]) ** 2
+        if len(self._categorical_indices):
+            d2[..., self._categorical_indices] = (
+                d2[..., self._categorical_indices] > 0.0
+            ).type(torch.float64)
         d2 = (d2 * self.inverse_squared_lengthscales).sum(dim=-1)
         return Matern52Kernel.apply(d2) * self.kernel_scale  # type: ignore
 
@@ -204,7 +206,7 @@ class GPRegressor:
 def _fit_kernel_params(
     X: np.ndarray,
     Y: np.ndarray,
-    is_categorical: np.ndarray,
+    categorical_indices: np.ndarray,
     log_prior: Callable[[GPRegressor], torch.Tensor],
     minimum_noise: float,
     deterministic_objective: bool,
@@ -234,7 +236,7 @@ def _fit_kernel_params(
         raw_params_tensor.requires_grad_(True)
         with torch.enable_grad():  # type: ignore[no-untyped-call]
             gpr = GPRegressor(
-                is_categorical=torch.from_numpy(is_categorical),
+                categorical_indices=torch.from_numpy(categorical_indices),
                 X_train=torch.from_numpy(X),
                 y_train=torch.from_numpy(Y),
                 inverse_squared_lengthscales=torch.exp(raw_params_tensor[:n_params]),
@@ -268,7 +270,7 @@ def _fit_kernel_params(
     raw_params_opt_tensor = torch.from_numpy(res.x)
 
     gpr = GPRegressor(
-        is_categorical=torch.from_numpy(is_categorical),
+        categorical_indices=torch.from_numpy(categorical_indices),
         X_train=torch.from_numpy(X),
         y_train=torch.from_numpy(Y),
         inverse_squared_lengthscales=torch.exp(raw_params_opt_tensor[:n_params]),
@@ -286,7 +288,7 @@ def _fit_kernel_params(
 def fit_kernel_params(
     X: np.ndarray,
     Y: np.ndarray,
-    is_categorical: np.ndarray,
+    categorical_indices: np.ndarray,
     log_prior: Callable[[GPRegressor], torch.Tensor],
     minimum_noise: float,
     deterministic_objective: bool,
@@ -295,7 +297,7 @@ def fit_kernel_params(
 ) -> GPRegressor:
     default_kernel_params = torch.ones(X.shape[1] + 2, dtype=torch.float64)
     default_gpr_cache = GPRegressor(
-        is_categorical=torch.from_numpy(is_categorical),
+        categorical_indices=torch.from_numpy(categorical_indices),
         X_train=torch.from_numpy(X),
         y_train=torch.from_numpy(Y),
         inverse_squared_lengthscales=default_kernel_params[:-2].clone(),
@@ -314,7 +316,7 @@ def fit_kernel_params(
             return _fit_kernel_params(
                 X=X,
                 Y=Y,
-                is_categorical=is_categorical,
+                categorical_indices=categorical_indices,
                 log_prior=log_prior,
                 minimum_noise=minimum_noise,
                 gpr_cache=gpr_cache_to_use,
@@ -329,7 +331,7 @@ def fit_kernel_params(
         "The default initial kernel parameters will be used instead."
     )
     default_gpr = GPRegressor(
-        is_categorical=torch.from_numpy(is_categorical),
+        categorical_indices=torch.from_numpy(categorical_indices),
         X_train=torch.from_numpy(X),
         y_train=torch.from_numpy(Y),
         inverse_squared_lengthscales=default_kernel_params[:-2].clone(),
