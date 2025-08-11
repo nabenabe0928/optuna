@@ -220,13 +220,12 @@ class GPRegressor:
     def _update_kernel_params(
         self, raw_params_tensor: torch.Tensor, minimum_noise: float, deterministic_objective: bool
     ) -> None:
-        n_params = self._X_train.shape[1]
-        self.inverse_squared_lengthscales = torch.exp(raw_params_tensor[:n_params])
-        self.kernel_scale = torch.exp(raw_params_tensor[n_params])
+        self.inverse_squared_lengthscales = torch.exp(raw_params_tensor[:-2])
+        self.kernel_scale = torch.exp(raw_params_tensor[-2])
         self.noise_var = (
             torch.tensor(minimum_noise, dtype=torch.float64)
             if deterministic_objective
-            else torch.exp(raw_params_tensor[n_params + 1]) + minimum_noise
+            else raw_params_tensor[-1].exp() + minimum_noise
         )
 
     def _fit_kernel_params(
@@ -268,17 +267,12 @@ class GPRegressor:
             # jac=True means loss_func returns the gradient for gradient descent.
             res = so.minimize(
                 # Too small `gtol` causes instability in loss_func optimization.
-                loss_func,
-                initial_raw_params,
-                jac=True,
-                method="l-bfgs-b",
-                options={"gtol": gtol},
+                loss_func, initial_raw_params, jac=True, method="l-bfgs-b", options={"gtol": gtol}
             )
         if not res.success:
             raise RuntimeError(f"Optimization failed: {res.message}")
 
-        raw_params_opt_tensor = torch.from_numpy(res.x)
-        self._update_kernel_params(raw_params_opt_tensor, minimum_noise, deterministic_objective)
+        self._update_kernel_params(torch.from_numpy(res.x), minimum_noise, deterministic_objective)
         self._cache_matrix()
         return self
 
