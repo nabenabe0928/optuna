@@ -220,12 +220,13 @@ class GPRegressor:
     def _update_kernel_params(
         self, raw_params_tensor: torch.Tensor, minimum_noise: float, deterministic_objective: bool
     ) -> None:
-        self.inverse_squared_lengthscales = torch.exp(raw_params_tensor[:-2])
-        self.kernel_scale = torch.exp(raw_params_tensor[-2])
+        exp_raw_params_tensor = raw_params_tensor.exp()
+        self.inverse_squared_lengthscales = exp_raw_params_tensor[:-2]
+        self.kernel_scale = exp_raw_params_tensor[-2]
         self.noise_var = (
             torch.tensor(minimum_noise, dtype=torch.float64)
             if deterministic_objective
-            else raw_params_tensor[-1].exp() + minimum_noise
+            else exp_raw_params_tensor[-1] + minimum_noise
         )
 
     def _fit_kernel_params(
@@ -235,8 +236,6 @@ class GPRegressor:
         deterministic_objective: bool,
         gtol: float,
     ) -> "GPRegressor":
-        n_params = self._X_train.shape[1]
-
         # We apply log transform to enforce the positivity of the kernel parameters.
         # Note that we cannot just use the constraint because of the numerical unstability
         # of the marginal log likelihood.
@@ -260,7 +259,7 @@ class GPRegressor:
                 loss = -self.marginal_log_likelihood() - log_prior(self)
                 loss.backward()  # type: ignore
                 # scipy.minimize requires all the gradients to be zero for termination.
-                assert not deterministic_objective or raw_params_tensor.grad[n_params + 1] == 0
+                assert not deterministic_objective or raw_params_tensor.grad[-1] == 0
             return loss.item(), raw_params_tensor.grad.detach().numpy()  # type: ignore
 
         with single_blas_thread_if_scipy_v1_15_or_newer():
