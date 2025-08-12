@@ -176,9 +176,8 @@ class GPRegressor:
         assert (
             self._cov_Y_Y_inv is not None and self._cov_Y_Y_inv_Y is not None
         ), "Call cache_matrix before calling posterior."
-        cov_fx_fX = self.kernel(x[..., None, :])[..., 0, :]
         cov_fx_fx = self.kernel_scale  # kernel(x, x) = kernel_scale
-        mean = cov_fx_fX @ self._cov_Y_Y_inv_Y
+        mean = (cov_fx_fX := self.kernel(x)) @ self._cov_Y_Y_inv_Y
         var = cov_fx_fx - (cov_fx_fX * (cov_fx_fX @ self._cov_Y_Y_inv)).sum(dim=-1)
         return mean, var.clamp_min(0.0)
 
@@ -223,10 +222,9 @@ class GPRegressor:
         exp_raw_params_tensor = raw_params_tensor.exp()
         self.inverse_squared_lengthscales = exp_raw_params_tensor[:-2]
         self.kernel_scale = exp_raw_params_tensor[-2]
+        min_noise_t = torch.tensor(minimum_noise, dtype=torch.float64)
         self.noise_var = (
-            torch.tensor(minimum_noise, dtype=torch.float64)
-            if deterministic_objective
-            else exp_raw_params_tensor[-1] + minimum_noise
+            min_noise_t if deterministic_objective else exp_raw_params_tensor[-1] + min_noise_t
         )
 
     def _fit_kernel_params(
@@ -241,13 +239,11 @@ class GPRegressor:
         # of the marginal log likelihood.
         # We also enforce the noise parameter to be greater than `minimum_noise` to avoid
         # pathological behavior of maximum likelihood estimation.
-        initial_raw_params = np.concatenate(
-            [
-                self.inverse_squared_lengthscales.detach().numpy(),
-                # We add 0.01 * minimum_noise to initial noise_var to avoid instability.
-                [self.kernel_scale.item(), self.noise_var.item() - 0.99 * minimum_noise],
-            ]
-        )
+        initial_raw_params = np.empty(len(self.inverse_squared_lengthscales) + 2, dtype=float)
+        initial_raw_params[:-2] = self.inverse_squared_lengthscales.detach().numpy()
+        initial_raw_params[-2] = self.kernel_scale.item()
+        # We add 0.01 * minimum_noise to initial noise_var to avoid instability.
+        initial_raw_params[-1] = self.noise_var.item() - 0.99 * minimum_noise
         initial_raw_params = np.log(initial_raw_params)
 
         def loss_func(raw_params: np.ndarray) -> tuple[float, np.ndarray]:
