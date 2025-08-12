@@ -73,10 +73,10 @@ class Matern52Kernel(torch.autograd.Function):
 
         Notice that the derivative of this function is taken w.r.t. d**2, but not w.r.t. d.
         """
-        sqrt5d = torch.sqrt(5 * squared_distance)
-        exp_part = torch.exp(-sqrt5d)
-        val = exp_part * ((5 / 3) * squared_distance + sqrt5d + 1)
-        deriv = (-5 / 6) * (sqrt5d + 1) * exp_part
+        sqrt5d = (5 * squared_distance).sqrt()
+        exp_part = (-sqrt5d).exp()
+        val = exp_part * ((5 / 3) * squared_distance + (sqrt5d_plus_1 := sqrt5d + 1))
+        deriv = (-5 / 6) * sqrt5d_plus_1 * exp_part
         ctx.save_for_backward(deriv)
         return val
 
@@ -153,14 +153,13 @@ class GPRegressor:
         """
         if X is None:
             return Matern52Kernel.apply(
-                (self._squared_X_diffs * self.inverse_squared_lengthscales).sum(dim=-1)
+                self._squared_X_diffs.matmul(self.inverse_squared_lengthscales)
             ) * self.kernel_scale  # type: ignore
 
         d2 = (X[..., None, :] - self._X_train[..., None, :, :]) ** 2
         if self._is_categorical.any():
             d2[..., self._is_categorical] = (d2[..., self._is_categorical] > 0.0).type(torch.float64)
-        d2 = (d2 * self.inverse_squared_lengthscales).sum(dim=-1)
-        return Matern52Kernel.apply(d2) * self.kernel_scale  # type: ignore
+        return Matern52Kernel.apply(d2.matmul(self.inverse_squared_lengthscales)) * self.kernel_scale  # type: ignore
 
     def posterior(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -177,8 +176,8 @@ class GPRegressor:
             self._cov_Y_Y_inv is not None and self._cov_Y_Y_inv_Y is not None
         ), "Call cache_matrix before calling posterior."
         cov_fx_fx = self.kernel_scale  # kernel(x, x) = kernel_scale
-        mean = (cov_fx_fX := self.kernel(x)) @ self._cov_Y_Y_inv_Y
-        var = cov_fx_fx - (cov_fx_fX * (cov_fx_fX @ self._cov_Y_Y_inv)).sum(dim=-1)
+        mean = (cov_fx_fX := self.kernel(x)).matmul(self._cov_Y_Y_inv_Y)
+        var = cov_fx_fx - torch.linalg.vecdot(cov_fx_fX, cov_fx_fX.matmul(self._cov_Y_Y_inv))
         return mean, var.clamp_min(0.0)
 
     def marginal_log_likelihood(self) -> torch.Tensor:  # Scalar
@@ -208,13 +207,12 @@ class GPRegressor:
         latter is N**3+2*N**2-N flops.
         """
         n_points = self._X_train.shape[0]
-        const = -0.5 * n_points * math.log(2 * math.pi)
-        cov_Y_Y = self.kernel() + self.noise_var * torch.eye(n_points, dtype=torch.float64)
-        L = torch.linalg.cholesky(cov_Y_Y)
-        logdet_part = -L.diagonal().log().sum()
+        cov_Y_Y = self.kernel()
+        cov_Y_Y.diagonal().add_(self.noise_var)
+        logdet_part = -(L := torch.linalg.cholesky(cov_Y_Y)).diagonal().log().sum()
         inv_L_y = torch.linalg.solve_triangular(L, self._y_train[:, None], upper=False)[:, 0]
-        quad_part = -0.5 * (inv_L_y @ inv_L_y)
-        return logdet_part + const + quad_part
+        quad_part = -0.5 * inv_L_y.dot(inv_L_y)
+        return logdet_part + quad_part
 
     def _update_kernel_params(
         self, raw_params_tensor: torch.Tensor, minimum_noise: float, deterministic_objective: bool
