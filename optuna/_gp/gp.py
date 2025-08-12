@@ -156,9 +156,9 @@ class GPRegressor:
                 self._squared_X_diffs.matmul(self.inverse_squared_lengthscales)
             ) * self.kernel_scale  # type: ignore
 
-        d2 = (X[..., None, :] - self._X_train[..., None, :, :]) ** 2
+        d2 = (X[..., None, :] - self._X_train[..., None, :, :]).square()
         if self._is_categorical.any():
-            d2[..., self._is_categorical] = (d2[..., self._is_categorical] > 0.0).type(torch.float64)
+            d2[..., self._is_categorical] = (d2[..., self._is_categorical] > 0).type(torch.float64)
         return Matern52Kernel.apply(d2.matmul(self.inverse_squared_lengthscales)) * self.kernel_scale  # type: ignore
 
     def posterior(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
