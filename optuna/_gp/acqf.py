@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     class SobolGenerator(Protocol):
         def __call__(self, dim: int, n_samples: int, seed: int | None) -> torch.Tensor:
             raise NotImplementedError
+
 else:
     from optuna._imports import _LazyImport
 

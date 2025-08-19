@@ -22,7 +22,6 @@ from optuna.trial import TrialState
 if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Sequence
-    from typing import Literal
 
     import torch
 
@@ -306,25 +305,21 @@ class GPSampler(BaseSampler):
 
         def _get_scaled_input_noise_params(
             input_noise_params: dict[str, float], noise_param_name: str
-        ) -> list[float]:
+        ) -> torch.Tensor:
             if not (input_noise_params.keys() <= search_space.keys()):
                 raise KeyError(
                     f"param names in {noise_param_name} must be in {list(search_space.keys())}."
                 )
-            numerical_dists = (
-                optuna.distributions.FloatDistribution, optuna.distributions.IntDistribution
+            discrete_dists = (
+                optuna.distributions.CategoricalDistribution,
+                optuna.distributions.IntDistribution,
             )
             scaled_input_noise_params = torch.zeros(len(search_space), dtype=torch.float64)
             for i, (param_name, dist) in enumerate(search_space.items()):
                 if param_name not in input_noise_params:
                     continue
                 err_msg = f"Cannot add input noise to discrete parameter '{param_name}'."
-                if isinstance(
-                    dist, (
-                        optuna.distributions.CategoricalDistribution,
-                        optuna.distributions.IntDistribution,
-                    )
-                ):
+                if isinstance(dist, discrete_dists):
                     raise ValueError(err_msg)
                 assert isinstance(dist, optuna.distributions.FloatDistribution)
                 if dist.step is not None:
@@ -361,7 +356,7 @@ class GPSampler(BaseSampler):
                 n_input_noise_samples=32,
                 n_qmc_samples=128,
                 qmc_seed=self._rng.rng.randint(1 << 30),
-                input_noise_stdevs=scaled_input_noise_params,
+                normal_input_noise_stdevs=scaled_input_noise_params,
             )
         else:
             assert False, "Should not reach here."
