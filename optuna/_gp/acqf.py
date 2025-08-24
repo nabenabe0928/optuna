@@ -284,16 +284,16 @@ class ValueAtRisk(BaseAcquisitionFunc):
             )
 
     def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
-        means, covar = self._gpr.joint_posterior(x[..., None, :] + self._input_noise)
+        """
+        TODO: Adapt to NEI.
+        1. Generate posterior samples for each X_train as well.
+        2. Use the maximum VaR for each MC sample as the f0 in NEI. (Denote it as f0[i])
+        3. Then compute (mc_value_at_risk - f0).clamp_min(0).mean()
+        """
+        means, covar = self._gpr.joint_posterior(x.unsqueeze(-2) + self._input_noise)
         L = torch.linalg.cholesky(covar)
-        posterior_samples = means[..., None, :] + self._fixed_samples @ L
-        topk_samples, _ = torch.topk(
-            posterior_samples.reshape(*posterior_samples.shape[:-2], -1),
-            k=int(self._alpha * posterior_samples.size(0)),
-            dim=-1,
-        )
-        # CVaR: torch.mean(topk_samples, dim=-1)
-        return topk_samples[..., -1]
+        posterior_samples = means.unsqueeze(-2) + self._fixed_samples @ L
+        return torch.quantile(posterior_samples, q=self._alpha, dim=-1).mean(dim=-1)
 
 
 class LogEHVI(BaseAcquisitionFunc):
