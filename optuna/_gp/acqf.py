@@ -293,6 +293,7 @@ class ValueAtRisk(BaseAcquisitionFunc):
         means, covar = self._gpr.joint_posterior(x.unsqueeze(-2) + self._input_noise)
         L = torch.linalg.cholesky(covar)
         posterior_samples = means.unsqueeze(-2) + self._fixed_samples @ L
+        # If CVaR, use torch.topk instead of torch.quantile.
         return torch.quantile(posterior_samples, q=self._alpha, dim=-1).mean(dim=-1)
 
 
