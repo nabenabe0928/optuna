@@ -252,6 +252,7 @@ class ValueAtRisk(BaseAcquisitionFunc):
         self._fixed_samples = _sample_from_normal_sobol(
             dim=n_input_noise_samples, n_samples=n_qmc_samples, seed=seed
         )
+        print(self._value_at_risk(gpr._X_train).argmax(dim=-2).unique().numel())
         super().__init__(length_scales=gpr.length_scales, search_space=search_space)
 
     @staticmethod
@@ -283,6 +284,13 @@ class ValueAtRisk(BaseAcquisitionFunc):
                 "must be provided."
             )
 
+    def _value_at_risk(self, x: torch.Tensor) -> torch.Tensor:
+        means, covar = self._gpr.joint_posterior(x.unsqueeze(-2) + self._input_noise)
+        L, _ = torch.linalg.cholesky_ex(covar)
+        posterior_samples = means.unsqueeze(-2) + self._fixed_samples @ L
+        # If CVaR, use torch.topk instead of torch.quantile.
+        return torch.quantile(posterior_samples, q=self._alpha, dim=-1)
+
     def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
         """
         TODO: Adapt to NEI.
@@ -291,11 +299,7 @@ class ValueAtRisk(BaseAcquisitionFunc):
         3. Use the maximum VaR (cache) for each MC sample as the f0 in NEI. (Denote it as f0[i])
         4. Then compute (mc_value_at_risk - f0).clamp_min(0).mean()
         """
-        means, covar = self._gpr.joint_posterior(x.unsqueeze(-2) + self._input_noise)
-        L = torch.linalg.cholesky(covar)
-        posterior_samples = means.unsqueeze(-2) + self._fixed_samples @ L
-        # If CVaR, use torch.topk instead of torch.quantile.
-        return torch.quantile(posterior_samples, q=self._alpha, dim=-1).mean(dim=-1)
+        return self._value_at_risk(x).mean(dim=-1)
 
 
 class LogEHVI(BaseAcquisitionFunc):
