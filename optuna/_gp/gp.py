@@ -19,7 +19,6 @@ is_categorical:
 
 from __future__ import annotations
 
-import math
 from typing import Any
 from typing import TYPE_CHECKING
 import warnings
@@ -149,9 +148,8 @@ class GPRegressor:
         """
         d2 = (X1[..., :, None, :] - X2[..., None, :, :]) ** 2
         d2[..., self._is_categorical] = (d2[..., self._is_categorical] > 0.0).type(torch.float64)
-        return Matern52Kernel.apply(
-            d2.matmul(self.inverse_squared_lengthscales)
-        ) * self.kernel_scale  # type: ignore
+        sqdist = d2.matmul(self.inverse_squared_lengthscales)
+        return Matern52Kernel.apply(sqdist) * self.kernel_scale  # type: ignore
 
     def posterior(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
