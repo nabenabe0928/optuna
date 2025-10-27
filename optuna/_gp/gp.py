@@ -19,8 +19,6 @@ is_categorical:
 
 from __future__ import annotations
 
-import math
-from typing import Any
 from typing import TYPE_CHECKING
 import warnings
 
@@ -32,6 +30,7 @@ from optuna.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Any
 
     import scipy
     import torch
@@ -132,7 +131,7 @@ class GPRegressor:
         # NOTE(nabenabe): Don't use np.linalg.inv because it is too slow und unstable.
         # cf. https://github.com/optuna/optuna/issues/6230
         cov_Y_Y_inv_Y = scipy.linalg.solve_triangular(
-            cov_Y_Y_chol.T,
+            cov_Y_Y_chol.swapaxes(-1, -2),
             scipy.linalg.solve_triangular(cov_Y_Y_chol, self._y_train.numpy(), lower=True),
             lower=False,
         )
@@ -173,6 +172,7 @@ class GPRegressor:
                 sqd[..., self._is_categorical] = (sqd[..., self._is_categorical] > 0.0).type(
                     torch.float64
                 )
+        # TODO(nabenabe): Use transpose matmul for multi-objective case.
         sqdist = sqd.matmul(self.inverse_squared_lengthscales)
         return Matern52Kernel.apply(sqdist) * self.kernel_scale  # type: ignore
 
@@ -194,11 +194,14 @@ class GPRegressor:
         x_ = x if not is_single_point else x.unsqueeze(0)
         cov_fx_fX = self.kernel(x_)
         cov_fx_fx = self.kernel_scale  # kernel(x, x) = kernel_scale
-        mean = cov_fx_fX @ self._cov_Y_Y_inv_Y
+        # TODO(nabenabe): Use transpose matmul for multi-objective case.
+        mean = cov_fx_fX.matmul(self._cov_Y_Y_inv_Y)
         # K @ inv(C) = V --> K = V @ C --> K = V @ L @ L.T
         cov_fx_fX_cov_Y_Y_inv = torch.linalg.solve_triangular(
             self._cov_Y_Y_chol,
-            torch.linalg.solve_triangular(self._cov_Y_Y_chol.T, cov_fx_fX, upper=True, left=False),
+            torch.linalg.solve_triangular(
+                self._cov_Y_Y_chol.transpose(-2, -1), cov_fx_fX, upper=True, left=False
+            ),
             upper=False,
             left=False,
         )
@@ -231,14 +234,16 @@ class GPRegressor:
         2/3*N**3 flops, the overall cost for the former is 1/3*N**3+N**2+N flops and that for the
         latter is N**3+2*N**2-N flops.
         """
-        n_points = self._X_train.shape[0]
-        const = -0.5 * n_points * math.log(2 * math.pi)
-        cov_Y_Y = self.kernel() + self.noise_var * torch.eye(n_points, dtype=torch.float64)
+        cov_Y_Y = self.kernel()
+        cov_Y_Y.diagonal(dim1=-2, dim2=-1).add_(self.noise_var)
         L = torch.linalg.cholesky(cov_Y_Y)
-        logdet_part = -L.diagonal().log().sum()
-        inv_L_y = torch.linalg.solve_triangular(L, self._y_train[:, None], upper=False)[:, 0]
-        quad_part = -0.5 * (inv_L_y @ inv_L_y)
-        return logdet_part + const + quad_part
+        logdet_part = -L.diagonal(dim1=-2, dim2=-1).log().sum()
+        is_single_objective = self._y_train.ndim == 1
+        Y = self._y_train.unsqueeze(-1) if is_single_objective else self._y_train
+        inv_L_y = torch.linalg.solve_triangular(L, Y, upper=False)
+        quad_part = -0.5 * torch.linalg.vecdot(inv_L_y, inv_L_y, dim=0)
+        out = logdet_part + quad_part
+        return out.squeeze(-1) if is_single_objective else out
 
     def _fit_kernel_params(
         self,
