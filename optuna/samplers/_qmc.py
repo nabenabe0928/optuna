@@ -295,7 +295,7 @@ class QMCSampler(BaseSampler):
         search_space_str = {
             param_name: str(search_space[param_name]) for param_name in sorted(search_space)
         }
-        qmc_vars = {"qmc_type": self._qmc_type, "search_space": search_space_str}
+        qmc_vars: dict[str, Any] = {"qmc_type": self._qmc_type, "search_space": search_space_str}
         # Sobol/Halton sequences without scrambling do not use seed.
         if self._scramble:
             qmc_vars.update(scramble=True, seed=self._seed)
