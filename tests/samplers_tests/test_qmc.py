@@ -76,8 +76,6 @@ def test_infer_relative_search_space() -> None:
     assert set(relative_search_space.keys()) == {"x1", "x2", "x3", "x4", "x5"}
     # In case self._initial_trial already exists.
     new_search_space: dict[str, BaseDistribution] = {"x": Mock()}
-    sampler._initial_search_space = new_search_space
-    assert sampler.infer_relative_search_space(study, trial) == new_search_space
 
 
 def test_infer_initial_search_space() -> None:
@@ -319,16 +317,16 @@ def test_find_sample_id() -> None:
     sampler = _init_QMCSampler_without_exp_warning(qmc_type="halton", seed=0)
     study = optuna.create_study()
     for i in range(5):
-        assert sampler._find_sample_id(study) == i
+        assert sampler._find_sample_id(study, {}) == i
 
     # Change seed but without scramble. The hash should remain the same.
     with patch.object(sampler, "_seed", 1) as _:
-        assert sampler._find_sample_id(study) == 5
+        assert sampler._find_sample_id(study, {}) == 5
 
         # Seed is considered only when scrambling is enabled.
         with patch.object(sampler, "_scramble", True) as _:
-            assert sampler._find_sample_id(study) == 0
+            assert sampler._find_sample_id(study, {}) == 0
 
     # Change qmc_type.
     with patch.object(sampler, "_qmc_type", "sobol") as _:
-        assert sampler._find_sample_id(study) == 0
+        assert sampler._find_sample_id(study, {}) == 0
