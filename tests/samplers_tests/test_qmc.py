@@ -74,8 +74,6 @@ def test_infer_relative_search_space() -> None:
     relative_search_space = sampler.infer_relative_search_space(study, trial)
     assert len(relative_search_space.keys()) == 5
     assert set(relative_search_space.keys()) == {"x1", "x2", "x3", "x4", "x5"}
-    # In case self._initial_trial already exists.
-    new_search_space: dict[str, BaseDistribution] = {"x": Mock()}
 
 
 def test_infer_initial_search_space() -> None:
