@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from typing import Any
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -11,6 +12,7 @@ from optuna import logging
 from optuna._experimental import experimental_class
 from optuna._imports import _LazyImport
 from optuna._transform import _SearchSpaceTransform
+from optuna.distributions import BaseDistribution
 from optuna.distributions import CategoricalDistribution
 from optuna.samplers import BaseSampler
 from optuna.samplers._base import _INDEPENDENT_SAMPLING_WARNING_TEMPLATE
@@ -19,9 +21,7 @@ from optuna.trial import TrialState
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import Any
 
-    from optuna.distributions import BaseDistribution
     from optuna.study import Study
     from optuna.trial import FrozenTrial
 
