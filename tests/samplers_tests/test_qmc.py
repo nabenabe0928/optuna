@@ -334,7 +334,7 @@ def test_find_sample_id() -> None:
         assert sampler._find_sample_id(study, {}) == 0
 
 
-def test_find_sample_id_dynamic() -> None:
+def test_find_sample_id_partial_fix() -> None:
     def _objective(trial: optuna.Trial) -> float:
         x = trial.suggest_float("x", -5, 5)
         y = trial.suggest_float("y", -5, 5)
