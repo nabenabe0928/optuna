@@ -70,7 +70,7 @@ def test_infer_relative_search_space() -> None:
 
     sampler = _init_QMCSampler_without_exp_warning()
     study = optuna.create_study(sampler=sampler)
-    trial = study.ask()
+    trial = Mock()
     # In case no past trials.
     assert sampler.infer_relative_search_space(study, trial) == {}
     # In case there is a past trial.
@@ -80,7 +80,7 @@ def test_infer_relative_search_space() -> None:
     assert set(relative_search_space.keys()) == {"x1", "x2", "x3", "x4", "x5"}
     # In case past trials exist and the new trial has some fixed params.
     study.enqueue_trial(params={"x1": 5, "x2": 3})
-    trial2 = study.ask()  # Pop the enqueued trial (with fixed params)
+    trial2 = study.trials[-1]  # Pop the enqueued trial as frozen (with fixed params)
     assert all(k in sampler.infer_relative_search_space(study, trial2) for k in ["x3", "x4", "x5"])
 
 
