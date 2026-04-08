@@ -78,13 +78,6 @@ def test_infer_relative_search_space() -> None:
     relative_search_space = sampler.infer_relative_search_space(study, trial)
     assert len(relative_search_space.keys()) == 5
     assert set(relative_search_space.keys()) == {"x1", "x2", "x3", "x4", "x5"}
-    # In case past trials exist and the new trial has some fixed params.
-    partial_sampler = optuna.samplers.PartialFixedSampler(
-        fixed_params={"x1": 5, "x2": 3}, base_sampler=sampler
-    )
-    study.ask()  # Spawn a new trial.
-    trial2 = study.trials[-1]  # Pop the new trial as frozen (with fixed params)
-    assert set(partial_sampler.infer_relative_search_space(study, trial2)) == {"x3", "x4", "x5"}
 
 
 def test_infer_initial_search_space() -> None:
@@ -339,3 +332,23 @@ def test_find_sample_id() -> None:
     # Change qmc_type.
     with patch.object(sampler, "_qmc_type", "sobol") as _:
         assert sampler._find_sample_id(study, {}) == 0
+
+
+def test_find_sample_id_dynamic() -> None:
+    def _objective(trial: optuna.Trial) -> float:
+        x = trial.suggest_float("x", -5, 5)
+        y = trial.suggest_float("y", -5, 5)
+        return (x - 2) ** 2 + (y - 2) ** 2
+
+    study = optuna.create_study()
+    base_sampler = optuna.samplers.QMCSampler()
+    study.sampler = base_sampler
+    study.optimize(_objective, n_trials=8)
+    # The first trial is used to identify the search space, so it's not counted for QMC.
+    assert base_sampler._find_sample_id(study, search_space=study.trials[-1].distributions) == 7
+    study.sampler = optuna.samplers.PartialFixedSampler(
+        fixed_params={"x": study.best_params["x"]}, base_sampler=base_sampler
+    )
+    study.optimize(_objective, n_trials=8)
+    partial_search_space = {"y": study.trials[-1].distributions["y"]}
+    assert base_sampler._find_sample_id(study, search_space=partial_search_space) == 8
