@@ -171,7 +171,7 @@ def test_sample_relative() -> None:
     search_space.pop("x6")
     sampler = _init_QMCSampler_without_exp_warning()
     study = optuna.create_study(sampler=sampler)
-    trial = Mock()
+    trial = study.ask()
     # Make sure that sample type, shape is OK.
     for _ in range(3):
         sample = sampler.sample_relative(study, trial, search_space)
@@ -196,7 +196,7 @@ def test_sample_relative_halton() -> None:
     }
     sampler = _init_QMCSampler_without_exp_warning(scramble=False, qmc_type="halton")
     study = optuna.create_study(sampler=sampler)
-    trial = Mock()
+    trial = study.ask()
     # Make sure that sample type, shape is OK.
     samples = np.zeros((n, d))
     for i in range(n):
@@ -226,7 +226,7 @@ def test_sample_relative_sobol() -> None:
     }
     sampler = _init_QMCSampler_without_exp_warning(scramble=False, qmc_type="sobol")
     study = optuna.create_study(sampler=sampler)
-    trial = Mock()
+    trial = study.ask()
     # Make sure that sample type, shape is OK.
     samples = np.zeros((n, d))
     for i in range(n):
