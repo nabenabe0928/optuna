@@ -79,9 +79,12 @@ def test_infer_relative_search_space() -> None:
     assert len(relative_search_space.keys()) == 5
     assert set(relative_search_space.keys()) == {"x1", "x2", "x3", "x4", "x5"}
     # In case past trials exist and the new trial has some fixed params.
-    study.enqueue_trial(params={"x1": 5, "x2": 3})
-    trial2 = study.trials[-1]  # Pop the enqueued trial as frozen (with fixed params)
-    assert all(k in sampler.infer_relative_search_space(study, trial2) for k in ["x3", "x4", "x5"])
+    partial_sampler = optuna.samplers.PartialFixedSampler(
+        fixed_params={"x1": 5, "x2": 3}, base_sampler=sampler
+    )
+    study.ask()  # Spawn a new trial.
+    trial2 = study.trials[-1]  # Pop the new trial as frozen (with fixed params)
+    assert set(partial_sampler.infer_relative_search_space(study, trial2)) == {"x3", "x4", "x5"}
 
 
 def test_infer_initial_search_space() -> None:
