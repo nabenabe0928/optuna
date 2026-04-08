@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 from unittest.mock import patch
 import warnings
@@ -9,9 +10,12 @@ import numpy as np
 import pytest
 
 import optuna
-from optuna.distributions import BaseDistribution
 from optuna.trial import Trial
 from optuna.trial import TrialState
+
+
+if TYPE_CHECKING:
+    from optuna.distributions import BaseDistribution
 
 
 _SEARCH_SPACE = {
