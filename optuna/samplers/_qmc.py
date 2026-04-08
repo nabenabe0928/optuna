@@ -213,6 +213,10 @@ class QMCSampler(BaseSampler):
         )
 
     def _log_independent_sampling(self, trial: FrozenTrial, param_name: str) -> None:
+        # NOTE(nabenabe): We can extend `QMCSampler` to dynamic search space and categorical dist
+        # as well. For dynamic search space, we need to use the same mechanism as `group` by TPE.
+        # For categorical, we simply need to sample from [-1/2, C+1/2] and then round the number
+        # to get a categorical index.
         _logger.warning(
             _INDEPENDENT_SAMPLING_WARNING_TEMPLATE.format(
                 param_name=param_name,
@@ -292,8 +296,9 @@ class QMCSampler(BaseSampler):
         return sample
 
     def _find_sample_id(self, study: Study, search_space: dict[str, BaseDistribution]) -> int:
+        # Sort by keys to make the order static.
         search_space_str = {
-            param_name: str(search_space[param_name]) for param_name in sorted(search_space)
+            param_name: str(dist) for param_name, dist in sorted(search_space.items())
         }
         qmc_vars: dict[str, Any] = {"qmc_type": self._qmc_type, "search_space": search_space_str}
         # Sobol/Halton sequences without scrambling do not use seed.
