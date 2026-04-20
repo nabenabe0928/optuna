@@ -46,6 +46,14 @@ parametrized_x = pytest.mark.parametrize(
     [np.array([0.15, 0.12]), np.array([[0.15, 0.12], [0.0, 1.0]])],  # unbatched  # batched
 )
 
+parametrized_running_trials = pytest.mark.parametrize(
+    "running_trials",
+    [
+        np.array([[0.5, 0.5]]),
+        np.array([[0.5, 0.5], [0.7, 0.3]]),
+    ],
+)
+
 parametrized_additional_values = pytest.mark.parametrize(
     "additional_values",
     [
@@ -74,6 +82,73 @@ def test_eval_acqf(
         kwargs.update(threshold=np.max(Y))
 
     verify_eval_acqf(x, acqf_cls(**kwargs))  # type: ignore[arg-type]
+
+
+@parametrized_x
+@parametrized_running_trials
+def test_eval_logei_with_running_trials(
+    x: np.ndarray,
+    running_trials: np.ndarray,
+    search_space: SearchSpace,
+) -> None:
+    Y = np.array([1.0, 2.0, 3.0])
+    acqf = acqf_module.LogEI(
+        gpr=get_gpr(Y),
+        search_space=search_space,
+        threshold=np.max(Y),
+        normalized_params_of_running_trials=running_trials,
+        n_qmc_samples=32,
+        qmc_seed=42,
+    )
+    verify_eval_acqf(x, acqf)
+
+
+@parametrized_x
+@parametrized_running_trials
+def test_eval_logei_with_running_trials_infeasible(
+    x: np.ndarray,
+    running_trials: np.ndarray,
+    search_space: SearchSpace,
+) -> None:
+    Y = np.array([1.0, 2.0, 3.0])
+    acqf = acqf_module.LogEI(
+        gpr=get_gpr(Y),
+        search_space=search_space,
+        threshold=-np.inf,
+        normalized_params_of_running_trials=running_trials,
+        n_qmc_samples=32,
+        qmc_seed=42,
+    )
+    x_tensor = torch.from_numpy(x)
+    acqf_value = acqf.eval_acqf(x_tensor)
+    assert torch.all(acqf_value == 0)
+
+
+@parametrized_x
+@parametrized_additional_values
+@parametrized_running_trials
+def test_eval_constrained_logei_with_running_trials(
+    x: np.ndarray,
+    additional_values: np.ndarray,
+    running_trials: np.ndarray,
+    search_space: SearchSpace,
+) -> None:
+    c = additional_values.copy()
+    Y = np.array([1.0, 2.0, 3.0])
+    is_feasible = np.all(c <= 0, axis=1)
+    is_all_infeasible = not np.any(is_feasible)
+    acqf = acqf_module.ConstrainedLogEI(
+        gpr=get_gpr(Y),
+        search_space=search_space,
+        threshold=-np.inf if is_all_infeasible else np.max(Y[is_feasible]),
+        stabilizing_noise=0.0,
+        constraints_gpr_list=[get_gpr(vals) for vals in c.T],
+        constraints_threshold_list=[0.0] * len(c.T),
+        normalized_params_of_running_trials=running_trials,
+        n_qmc_samples=32,
+        qmc_seed=42,
+    )
+    verify_eval_acqf(x, acqf)
 
 
 @parametrized_x

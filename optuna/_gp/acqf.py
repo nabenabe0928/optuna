@@ -121,6 +121,8 @@ class LogEI(BaseAcquisitionFunc):
         threshold: float,
         normalized_params_of_running_trials: np.ndarray | None = None,
         stabilizing_noise: float = 1e-12,
+        n_qmc_samples: int = 128,
+        qmc_seed: int | None = None,
     ) -> None:
         self._gpr = gpr
         self._stabilizing_noise = stabilizing_noise
@@ -130,23 +132,23 @@ class LogEI(BaseAcquisitionFunc):
             normalized_params_of_running_trials_tensor = torch.from_numpy(
                 normalized_params_of_running_trials
             )
-
-            # NOTE(sawa3030): To handle running trials, the `best` constant liar strategy is
-            # currently implemented, as it is simple and performs well in our benchmarks.
-            # We plan to implement Monte-Carlo based approaches (e.g., BoTorch’s fantasize)
-            # in the near future.
-            # See https://github.com/optuna/optuna/pull/6430 for details.
-            # For background on the Constant Liar and Kriging Believer strategies, see
-            # Ginsbourger et al., "Kriging Is Well-Suited to Parallelize Optimization" (2010).
-            constant_liar_value = self._gpr._y_train.max()
-            constant_liar_y = constant_liar_value.expand(
-                normalized_params_of_running_trials_tensor.shape[0]
+            with torch.no_grad():
+                mean_running, var_running = self._gpr.posterior(
+                    normalized_params_of_running_trials_tensor
+                )
+            stdev_running = torch.sqrt(var_running + stabilizing_noise)
+            fixed_samples = _sample_from_normal_sobol(
+                dim=normalized_params_of_running_trials_tensor.shape[0],
+                n_samples=n_qmc_samples,
+                seed=qmc_seed,
             )
-
-            self._gpr.append_running_data(
-                normalized_params_of_running_trials_tensor,
-                constant_liar_y,
+            fantasy_running = mean_running + stdev_running * fixed_samples
+            self._fantasy_thresholds = torch.clamp(
+                fantasy_running.max(dim=-1).values, min=threshold
             )
+            self._log_n_qmc_samples = math.log(n_qmc_samples)
+        else:
+            self._fantasy_thresholds = None
 
         super().__init__(gpr.length_scales, search_space)
 
@@ -154,11 +156,16 @@ class LogEI(BaseAcquisitionFunc):
         mean, var = self._gpr.posterior(x)
         # If there are no feasible trials, max_Y is set to -np.inf.
         # If max_Y is set to -np.inf, we set logEI to zero to ignore it.
-        return (
-            logei(mean=mean, var=var + self._stabilizing_noise, f0=self._threshold)
-            if not np.isneginf(self._threshold)
-            else torch.zeros(x.shape[:-1], dtype=torch.float64)
-        )
+        if np.isneginf(self._threshold):
+            return torch.zeros(x.shape[:-1], dtype=torch.float64)
+
+        if self._fantasy_thresholds is None:
+            return logei(mean=mean, var=var + self._stabilizing_noise, f0=self._threshold)
+
+        sigma = torch.sqrt(var[..., None] + self._stabilizing_noise)
+        z = (mean[..., None] - self._fantasy_thresholds) / sigma
+        log_ei_per_sample = standard_logei(z) + sigma.log()
+        return torch.logsumexp(log_ei_per_sample, dim=-1) - self._log_n_qmc_samples
 
 
 class LogPI(BaseAcquisitionFunc):
@@ -245,12 +252,20 @@ class ConstrainedLogEI(BaseAcquisitionFunc):
         constraints_threshold_list: list[float],
         normalized_params_of_running_trials: np.ndarray | None = None,
         stabilizing_noise: float = 1e-12,
+        n_qmc_samples: int = 128,
+        qmc_seed: int | None = None,
     ) -> None:
         assert (
             len(constraints_gpr_list) == len(constraints_threshold_list) and constraints_gpr_list
         )
         self._acqf = LogEI(
-            gpr, search_space, threshold, normalized_params_of_running_trials, stabilizing_noise
+            gpr,
+            search_space,
+            threshold,
+            normalized_params_of_running_trials,
+            stabilizing_noise,
+            n_qmc_samples=n_qmc_samples,
+            qmc_seed=qmc_seed,
         )
         self._constraints_acqf_list = [
             LogPI(

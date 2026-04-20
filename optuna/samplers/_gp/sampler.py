@@ -400,6 +400,7 @@ class GPSampler(BaseSampler):
                     search_space=internal_search_space,
                     threshold=standardized_score_vals[:, 0].max(),
                     normalized_params_of_running_trials=normalized_params_of_running_trials,
+                    qmc_seed=self._rng.rng.randint(1 << 30),
                 )
                 best_params = normalized_params[np.argmax(standardized_score_vals), np.newaxis]
             else:
@@ -438,6 +439,7 @@ class GPSampler(BaseSampler):
                     constraints_gpr_list=constr_gpr_list,
                     constraints_threshold_list=constr_threshold_list,
                     normalized_params_of_running_trials=normalized_params_of_running_trials,
+                    qmc_seed=self._rng.rng.randint(1 << 30),
                 )
                 assert normalized_params.shape[:-1] == y_with_neginf.shape
                 best_params = (
