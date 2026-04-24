@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from typing import Any
@@ -307,7 +308,7 @@ class QMCSampler(BaseSampler):
         else:
             qmc_vars.update(scramble=False)
 
-        key_qmc_id = json.dumps(qmc_vars, separators=(",", ":"))
+        key_qmc_id = "qmc:" + hashlib.sha256(json.dumps(qmc_vars).encode()).hexdigest()
         # TODO(kstoneriv3): Here, we ideally assume that the following block is
         # an atomic transaction. Without such an assumption, the current implementation
         # only ensures that each `sample_id` is sampled at least once.
