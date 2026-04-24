@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Callable
 from typing import Any
 from typing import cast
 from typing import NamedTuple
@@ -189,7 +191,9 @@ def _get_slice_plot(info: _SlicePlotInfo) -> "go.Figure":
         figure.update_yaxes(title_text=info.target_name)
         if not info.subplots[0].is_numerical:
             figure.update_xaxes(
-                type="category", categoryorder="array", categoryarray=info.subplots[0].x_labels
+                type="category",
+                categoryorder="array",
+                categoryarray=_get_categorical_labels(info.subplots[0].x_labels),
             )
         elif info.subplots[0].is_log:
             figure.update_xaxes(type="log")
@@ -211,7 +215,7 @@ def _get_slice_plot(info: _SlicePlotInfo) -> "go.Figure":
                 figure.update_xaxes(
                     type="category",
                     categoryorder="array",
-                    categoryarray=subplot_info.x_labels,
+                    categoryarray=_get_categorical_labels(subplot_info.x_labels),
                     row=1,
                     col=column_index,
                 )
@@ -233,23 +237,35 @@ def _generate_slice_subplot(subplot_info: _SliceSubplotInfo) -> list[Scatter]:
     for x, y, num, c in zip(
         subplot_info.x, subplot_info.y, subplot_info.trial_numbers, subplot_info.constraints
     ):
-        if x is not None or x != "None" or y is not None or y != "None":
-            if c:
-                feasible.x.append(x)
-                feasible.y.append(y)
-                feasible.trial_numbers.append(num)
-            else:
-                infeasible.x.append(x)
-                infeasible.y.append(y)
+        if subplot_info.is_numerical and x is None:
+            continue
+        if c:
+            feasible.x.append(x)
+            feasible.y.append(y)
+            feasible.trial_numbers.append(num)
+        else:
+            infeasible.x.append(x)
+            infeasible.y.append(y)
+
+    if subplot_info.is_numerical:
+        feasible_x = feasible.x
+        feasible_y = feasible.y
+        feasible_c = feasible.trial_numbers
+        infeasible_x = infeasible.x
+        infeasible_y = infeasible.y
+    else:
+        feasible_x, feasible_y, feasible_c = _get_categorical_plot_values(subplot_info, feasible)
+        infeasible_x, infeasible_y, _ = _get_categorical_plot_values(subplot_info, infeasible)
+
     trace.append(
         go.Scatter(
-            x=feasible.x,
-            y=feasible.y,
+            x=feasible_x,
+            y=feasible_y,
             mode="markers",
             name="Feasible Trial",
             marker={
                 "line": {"width": 0.5, "color": "Grey"},
-                "color": feasible.trial_numbers,
+                "color": feasible_c,
                 "colorscale": COLOR_SCALE,
                 "colorbar": {
                     "title": "Trial",
@@ -260,11 +276,11 @@ def _generate_slice_subplot(subplot_info: _SliceSubplotInfo) -> list[Scatter]:
             showlegend=False,
         )
     )
-    if len(infeasible.x) > 0:
+    if len(infeasible_x) > 0:
         trace.append(
             go.Scatter(
-                x=infeasible.x,
-                y=infeasible.y,
+                x=infeasible_x,
+                y=infeasible_y,
                 mode="markers",
                 name="Infeasible Trial",
                 marker={
@@ -275,3 +291,29 @@ def _generate_slice_subplot(subplot_info: _SliceSubplotInfo) -> list[Scatter]:
         )
 
     return trace
+
+
+def _get_categorical_plot_values(
+    subplot_info: _SliceSubplotInfo, values: _PlotValues
+) -> tuple[list[Any], list[float], list[int]]:
+    assert subplot_info.x_labels is not None
+    value_x = []
+    value_y = []
+    value_c = []
+    points_dict = defaultdict(list)
+    for x, y, number in zip(values.x, values.y, values.trial_numbers):
+        points_dict[x].append((y, number))
+    for x_label in subplot_info.x_labels:
+        for y, number in points_dict[x_label]:
+            value_x.append(repr(x_label))
+            value_y.append(y)
+            value_c.append(number)
+    return value_x, value_y, value_c
+
+
+def _get_categorical_labels(
+    x_labels: tuple[CategoricalChoiceType, ...] | None,
+) -> list[str] | None:
+    if x_labels is None:
+        return None
+    return [repr(x_label) for x_label in x_labels]

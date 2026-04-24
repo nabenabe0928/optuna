@@ -484,7 +484,8 @@ class TPESampler(BaseSampler):
                         independent_sampler_name=self._random_sampler.__class__.__name__,
                         sampler_name=self.__class__.__name__,
                         fallback_reason=(
-                            "dynamic search space is not supported for `multivariate=True`"
+                            "`multivariate=True,group=False` does not support dynamic search space"
+                            " (but `multivariate=True,group=True` works)"
                         ),
                     )
                 )
@@ -505,7 +506,12 @@ class TPESampler(BaseSampler):
 
         if len(params_strs) == 0:
             return trial.params
-        params = json.loads("".join(params_strs))
+        try:
+            params = json.loads("".join(params_strs))
+        except json.JSONDecodeError:
+            # A race condition can occur when multiple workers write chunks
+            # concurrently. If the JSON is incomplete, fall back to trial.params.
+            return trial.params
         params.update(trial.params)
         return params
 

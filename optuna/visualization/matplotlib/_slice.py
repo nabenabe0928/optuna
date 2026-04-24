@@ -123,18 +123,21 @@ def _generate_slice_subplot(
     for x, y, num, c in zip(
         subplot_info.x, subplot_info.y, subplot_info.trial_numbers, subplot_info.constraints
     ):
-        if x is not None or x != "None" or y is not None or y != "None":
-            if c:
-                feasible.x.append(x)
-                feasible.y.append(y)
-                feasible.trial_numbers.append(num)
-            else:
-                infeasible.x.append(x)
-                infeasible.y.append(y)
-                infeasible.trial_numbers.append(num)
+        if subplot_info.is_numerical and x is None:
+            continue
+        if c:
+            feasible.x.append(x)
+            feasible.y.append(y)
+            feasible.trial_numbers.append(num)
+        else:
+            infeasible.x.append(x)
+            infeasible.y.append(y)
+            infeasible.trial_numbers.append(num)
+
     if subplot_info.is_log:
         ax.set_xscale("log")
         scale = "log"
+
     if subplot_info.is_numerical:
         feasible_x = feasible.x
         feasible_y = feasible.y
@@ -145,6 +148,7 @@ def _generate_slice_subplot(
         feasible_x, feasible_y, feasible_c = _get_categorical_plot_values(subplot_info, feasible)
         infeasible_x, infeasible_y, _ = _get_categorical_plot_values(subplot_info, infeasible)
         scale = "categorical"
+
     xlim = _calc_lim_with_padding(feasible_x + infeasible_x, padding_ratio, scale)
     ax.set_xlim(xlim[0], xlim[1])
     sc = ax.scatter(feasible_x, feasible_y, c=feasible_c, cmap=cmap, edgecolors="grey")
@@ -166,7 +170,7 @@ def _get_categorical_plot_values(
         points_dict[x].append((y, number))
     for x_label in subplot_info.x_labels:
         for y, number in points_dict[x_label]:
-            value_x.append(str(x_label))
+            value_x.append(repr(x_label))
             value_y.append(y)
             value_c.append(number)
     return value_x, value_y, value_c
