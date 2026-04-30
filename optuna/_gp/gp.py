@@ -165,7 +165,7 @@ class GPRegressor:
 
         # NOTE(nabenabe): Given K=[[K_11,K_12],[K_21,K_22]], and L_11=chol(K_11),
         # chol(K) = [[L_11, 0], [K_21 @ inv(L_11).T, chol(K_22 - K_21 @ inv(K_11) @ K_21.T)]].
-        # For simplicity, denote L_21 := K_21 @ inv(L_11).T. Solve K_21 = L_21 @ L_11.T w.r.t. L_21.
+        # For simplicity, denote L_21 = K_21 @ inv(L_11).T. Solve K_21 = L_21 @ L_11.T w.r.t. L_21.
         L21 = scipy.linalg.solve_triangular(
             self._cov_Y_Y_chol.cpu().numpy(), kernel_running_train.T, lower=True
         ).T
