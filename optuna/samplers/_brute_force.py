@@ -176,20 +176,20 @@ class BruteForceSampler(BaseSampler):
         tree: _TreeNode, trials: Iterable[FrozenTrial], params: dict[str, Any]
     ) -> None:
         # Populate tree under given params from the given trials.
+        cand_cache = {}
+
+        def _gen(trial: FrozenTrial):
+            for name, dist in trial.distributions.items():
+                if name in params:
+                    continue
+                if name not in cand_cache:
+                    cand_cache[name] = _enumerate_candidates(dist)
+                yield name, cand_cache[name], dist.to_internal_repr(trial.params[name])
+
         for trial in trials:
             if not all(p in trial.params and trial.params[p] == v for p, v in params.items()):
                 continue
-            leaf = tree.add_path(
-                (
-                    (
-                        param_name,
-                        _enumerate_candidates(param_distribution),
-                        param_distribution.to_internal_repr(trial.params[param_name]),
-                    )
-                    for param_name, param_distribution in trial.distributions.items()
-                    if param_name not in params
-                )
-            )
+            leaf = tree.add_path(_gen(trial))
             if leaf is not None:
                 # The parameters are on the defined grid.
                 if trial.state.is_finished():
