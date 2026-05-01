@@ -185,14 +185,18 @@ class BruteForceSampler(BaseSampler):
     ) -> None:
         # Populate tree under given params from the given trials.
         cand_cache = {}
+        internal_repr_cache = {}
 
-        def _gen(trial: FrozenTrial):
+        def _gen(trial: FrozenTrial) -> Iterable[tuple[str, Sequence[float], float]]:
             for name, dist in trial.distributions.items():
                 if name in params:
                     continue
                 if name not in cand_cache:
                     cand_cache[name] = _enumerate_candidates(dist)
-                yield name, cand_cache[name], dist.to_internal_repr(trial.params[name])
+                cache_key = (name, param_val := trial.params[name])
+                if cache_key not in internal_repr_cache:
+                    internal_repr_cache[cache_key] = dist.to_internal_repr(param_val)
+                yield name, cand_cache[name], internal_repr_cache[cache_key]
 
         for trial in trials:
             # NOTE(nabenabe): `nan` cannot be assigned as a param value.
