@@ -27,9 +27,10 @@ if TYPE_CHECKING:
 
 
 _TREE_SIZE_KEY = "brute_force:tree_size"
+_NaN = float("nan")
 
 
-@dataclass
+@dataclass(slots=True)
 class _TreeNode:
     # This is a class to represent the tree of search space.
 
@@ -213,7 +214,7 @@ class BruteForceSampler(BaseSampler):
 
         for trial in trials:
             # NOTE(nabenabe): `nan` cannot be assigned as a param value.
-            if not all(trial.params.get(p, float("nan")) == v for p, v in params.items()):
+            if not all(trial.params.get(p, _NaN) == v for p, v in params.items()):
                 continue
             leaf = tree.add_path(_gen(trial))
             if leaf is not None:
@@ -247,11 +248,7 @@ class BruteForceSampler(BaseSampler):
             )
 
     def after_trial(
-        self,
-        study: Study,
-        trial: FrozenTrial,
-        state: TrialState,
-        values: Sequence[float] | None,
+        self, study: Study, trial: FrozenTrial, state: TrialState, values: Sequence[float] | None
     ) -> None:
         tree_size = study._storage.get_study_system_attrs(study._study_id).get(_TREE_SIZE_KEY, 0)
         exclude_running = not self._avoid_premature_stop
