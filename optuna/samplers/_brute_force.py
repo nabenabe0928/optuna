@@ -26,6 +26,9 @@ if TYPE_CHECKING:
     from optuna.trial import FrozenTrial
 
 
+_TREE_SIZE_KEY = "brute_force:tree_size"
+
+
 @dataclass
 class _TreeNode:
     # This is a class to represent the tree of search space.
@@ -76,17 +79,18 @@ class _TreeNode:
     def is_any_expandable(self, exclude_running: bool) -> bool:
         if self.children is None:
             return not exclude_running or not self.is_running
-        else:
-            return any(
-                child.is_any_expandable(exclude_running) for child in self.children.values()
-            )
+        return any(child.is_any_expandable(exclude_running) for child in self.children.values())
 
     def count_unexpanded(self, exclude_running: bool) -> int:
         # Count the number of unexpanded nodes in the subtree.
         if self.children is None:
             return 0 if exclude_running and self.is_running else 1
-        else:
-            return sum(child.count_unexpanded(exclude_running) for child in self.children.values())
+        return sum(child.count_unexpanded(exclude_running) for child in self.children.values())
+
+    def count_total_combinations(self) -> int:
+        if not self.children:
+            return 1
+        return sum(child.count_total_combinations() for child in self.children.values())
 
     def sample_child(self, rng: np.random.RandomState, exclude_running: bool) -> float:
         assert self.children is not None
@@ -114,6 +118,14 @@ class _TreeNode:
                     weights[i] = 0.0
         weights /= weights.sum()
         return rng.choice(list(self.children.keys()), p=weights)
+
+
+def _get_non_waiting_trials(study: Study) -> list[FrozenTrial]:
+    # We directly query the storage to get trials here instead of `study.get_trials`,
+    # since some pruners such as `HyperbandPruner` use the study transformed
+    # to filter trials. See https://github.com/optuna/optuna/issues/2327 for details.
+    states = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING, TrialState.FAIL)
+    return study._storage.get_all_trials(study._study_id, deepcopy=False, states=states)
 
 
 @experimental_class("3.1.0")
@@ -168,6 +180,7 @@ class BruteForceSampler(BaseSampler):
     def __init__(self, seed: int | None = None, avoid_premature_stop: bool = False) -> None:
         self._rng = LazyRandomState(seed)
         self._avoid_premature_stop = avoid_premature_stop
+        self._tree_size_check_interval = 500
 
     def infer_relative_search_space(
         self, study: Study, trial: FrozenTrial
@@ -218,20 +231,7 @@ class BruteForceSampler(BaseSampler):
         param_distribution: BaseDistribution,
     ) -> Any:
         exclude_running = not self._avoid_premature_stop
-
-        # We directly query the storage to get trials here instead of `study.get_trials`,
-        # since some pruners such as `HyperbandPruner` use the study transformed
-        # to filter trials. See https://github.com/optuna/optuna/issues/2327 for details.
-        trials = study._storage.get_all_trials(
-            study._study_id,
-            deepcopy=False,
-            states=(
-                TrialState.COMPLETE,
-                TrialState.PRUNED,
-                TrialState.RUNNING,
-                TrialState.FAIL,
-            ),
-        )
+        trials = _get_non_waiting_trials(study)
         tree = _TreeNode()
         candidates = _enumerate_candidates(param_distribution)
         tree.expand(param_name, candidates)
@@ -253,42 +253,27 @@ class BruteForceSampler(BaseSampler):
         state: TrialState,
         values: Sequence[float] | None,
     ) -> None:
+        tree_size = study._storage.get_study_system_attrs(study._study_id).get(_TREE_SIZE_KEY, 0)
         exclude_running = not self._avoid_premature_stop
-
-        # We directly query the storage to get trials here instead of `study.get_trials`,
-        # since some pruners such as `HyperbandPruner` use the study transformed
-        # to filter trials. See https://github.com/optuna/optuna/issues/2327 for details.
-        trials = study._storage.get_all_trials(
-            study._study_id,
-            deepcopy=False,
-            states=(
-                TrialState.COMPLETE,
-                TrialState.PRUNED,
-                TrialState.RUNNING,
-                TrialState.FAIL,
-            ),
+        trials = _get_non_waiting_trials(study)
+        if len(trials) < tree_size:
+            # NOTE(nabenabe): No need to stop study. Early return to avoid tree build overhead.
+            return
+        # Set current trial as complete.
+        current_trial = create_trial(
+            state=state, values=values, params=trial.params, distributions=trial.distributions
         )
         tree = _TreeNode()
         self._populate_tree(
-            tree,
-            (
-                (
-                    t
-                    if t.number != trial.number
-                    else create_trial(
-                        state=state,  # Set current trial as complete.
-                        values=values,
-                        params=trial.params,
-                        distributions=trial.distributions,
-                    )
-                )
-                for t in trials
-            ),
-            {},
+            tree, (t if t.number != trial.number else current_trial for t in trials), {}
         )
 
         if not tree.is_any_expandable(exclude_running):
             study.stop()
+
+        if trial.number % self._tree_size_check_interval == 0:
+            tree_size = max(tree_size, tree.count_total_combinations())
+            study._storage.set_study_system_attr(study._study_id, _TREE_SIZE_KEY, tree_size)
 
 
 def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[float]:
