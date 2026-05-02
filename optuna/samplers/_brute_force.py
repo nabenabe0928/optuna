@@ -30,6 +30,7 @@ _TREE_SIZE_KEY = "brute_force:tree_size"
 _NaN = float("nan")  # NOTE: Define once to save runtime overhead.
 
 
+# TODO(nabenabe): Use `dict` instead of `dataclass` because dataclass instantiation is too slow.
 @dataclass  # TODO(nabenabe): Add `slots=True` once Python 3.9 is dropped.
 class _TreeNode:
     # This is a class to represent the tree of search space.
@@ -43,13 +44,16 @@ class _TreeNode:
     children: dict[float, "_TreeNode"] | None = None
     is_running: bool = False
 
-    def expand(self, param_name: str | None, search_space: Iterable[float]) -> None:
+    def expand(
+        self, param_name: str | None, search_space: Iterable[float]
+    ) -> dict[float, "_TreeNode"]:
         # If the node is unexpanded, expand it.
         # Otherwise, check if the node is compatible with the given search space.
         if self.children is None:
             # Expand the node
             self.param_name = param_name
             self.children = {value: _TreeNode() for value in search_space}
+            return self.children
         else:
             if self.param_name != param_name:
                 raise ValueError(f"param_name mismatch: {self.param_name} != {param_name}")
@@ -57,6 +61,7 @@ class _TreeNode:
                 raise ValueError(
                     f"search_space mismatch: {set(self.children.keys())} != {set(search_space)}"
                 )
+            return self.children
 
     def set_running(self) -> None:
         self.is_running = True
@@ -70,11 +75,10 @@ class _TreeNode:
         # Add a path (i.e. a list of suggested parameters in one trial) to the tree.
         current_node = self
         for param_name, search_space, value in params_and_search_spaces:
-            current_node.expand(param_name, search_space)
-            assert current_node.children is not None
-            if value not in current_node.children:
+            next_node = current_node.expand(param_name, search_space).get(value)
+            if next_node is None:
                 return None
-            current_node = current_node.children[value]
+            current_node = next_node
         return current_node
 
     def is_any_expandable(self, exclude_running: bool) -> bool:
@@ -213,7 +217,7 @@ class BruteForceSampler(BaseSampler):
 
         for trial in trials:
             # NOTE(nabenabe): `nan` cannot be assigned as a param value.
-            if not all(trial.params.get(p, _NaN) == v for p, v in params.items()):
+            if params and not all(trial.params.get(p, _NaN) == v for p, v in params.items()):
                 continue
             leaf = tree.add_path(_gen(trial))
             if leaf is not None:
