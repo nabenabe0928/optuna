@@ -18,7 +18,6 @@ from optuna.trial import TrialState
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
     from collections.abc import Sequence
 
     from optuna.distributions import BaseDistribution
@@ -45,7 +44,7 @@ class _TreeNode:
     is_running: bool = False
 
     def expand(
-        self, param_name: str | None, search_space: Iterable[float]
+        self, param_name: str | None, search_space: list[float]
     ) -> dict[float, "_TreeNode"]:
         # If the node is unexpanded, expand it.
         # Otherwise, check if the node is compatible with the given search space.
@@ -70,7 +69,7 @@ class _TreeNode:
         self.expand(None, [])
 
     def add_path(
-        self, params_and_search_spaces: Iterable[tuple[str, Iterable[float], float]]
+        self, params_and_search_spaces: list[tuple[str, list[float], float]]
     ) -> _TreeNode | None:
         # Add a path (i.e. a list of suggested parameters in one trial) to the tree.
         current_node = self
@@ -198,13 +197,14 @@ class BruteForceSampler(BaseSampler):
 
     @staticmethod
     def _populate_tree(
-        tree: _TreeNode, trials: Iterable[FrozenTrial], params: dict[str, Any]
+        tree: _TreeNode, trials: list[FrozenTrial], params: dict[str, Any]
     ) -> None:
         # Populate tree under given params from the given trials.
         cand_cache = {}
         internal_repr_cache = {}
 
-        def _gen(trial: FrozenTrial) -> Iterable[tuple[str, Sequence[float], float]]:
+        def _get_path(trial: FrozenTrial) -> list[tuple[str, list[float], float]]:
+            edges = []
             for name, dist in trial.distributions.items():
                 if name in params:
                     continue
@@ -213,13 +213,14 @@ class BruteForceSampler(BaseSampler):
                 cache_key = (name, param_val := trial.params[name])
                 if cache_key not in internal_repr_cache:
                     internal_repr_cache[cache_key] = dist.to_internal_repr(param_val)
-                yield name, cand_cache[name], internal_repr_cache[cache_key]
+                edges.append((name, cand_cache[name], internal_repr_cache[cache_key]))
+            return edges
 
         for trial in trials:
             # NOTE(nabenabe): `nan` cannot be assigned as a param value.
             if params and not all(trial.params.get(p, _NaN) == v for p, v in params.items()):
                 continue
-            leaf = tree.add_path(_gen(trial))
+            leaf = tree.add_path(_get_path(trial))
             if leaf is not None:
                 # The parameters are on the defined grid.
                 if trial.state.is_finished():
@@ -242,7 +243,7 @@ class BruteForceSampler(BaseSampler):
         # Populating must happen after the initialization above to prevent `tree` from
         # being initialized as an empty graph, which is created with n_jobs > 1
         # where we get trials[i].params = {} for some i.
-        self._populate_tree(tree, (t for t in trials if t.number != trial.number), trial.params)
+        self._populate_tree(tree, [t for t in trials if t.number != trial.number], trial.params)
         if not tree.is_any_expandable(exclude_running):
             return param_distribution.to_external_repr(self._rng.rng.choice(candidates))
         else:
@@ -265,7 +266,7 @@ class BruteForceSampler(BaseSampler):
         )
         tree = _TreeNode()
         self._populate_tree(
-            tree, (t if t.number != trial.number else current_trial for t in trials), {}
+            tree, [t if t.number != trial.number else current_trial for t in trials], {}
         )
         if not tree.is_any_expandable(exclude_running):
             study.stop()
@@ -274,7 +275,7 @@ class BruteForceSampler(BaseSampler):
             study._storage.set_study_system_attr(study._study_id, _TREE_SIZE_KEY, tree_size)
 
 
-def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[float]:
+def _enumerate_candidates(param_distribution: BaseDistribution) -> list[float]:
     if isinstance(param_distribution, FloatDistribution):
         if param_distribution.step is None:
             raise ValueError(
