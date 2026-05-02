@@ -27,10 +27,10 @@ if TYPE_CHECKING:
 
 
 _TREE_SIZE_KEY = "brute_force:tree_size"
-_NaN = float("nan")
+_NaN = float("nan")  # NOTE: Define once to save runtime overhead.
 
 
-@dataclass(slots=True)
+@dataclass  # TODO(nabenabe): Add `slots=True` once Python 3.9 is dropped.
 class _TreeNode:
     # This is a class to represent the tree of search space.
 
@@ -107,7 +107,6 @@ class _TreeNode:
         weights_orig = unexpanded_counts / unexpanded_counts.sum()
         weights_flat = np.where(unexpanded_counts > 0, 1.0, 0.0)
         weights_flat /= weights_flat.sum()
-
         weights = (1.0 - alpha) * weights_orig + alpha * weights_flat
         if any(
             not value.is_running and weights[i] > 0
@@ -264,12 +263,10 @@ class BruteForceSampler(BaseSampler):
         self._populate_tree(
             tree, (t if t.number != trial.number else current_trial for t in trials), {}
         )
-
         if not tree.is_any_expandable(exclude_running):
             study.stop()
-
         if trial.number % self._tree_size_check_interval == 0:
-            tree_size = max(tree_size, tree.count_total_combinations())
+            tree_size = int(max(tree_size, tree.count_total_combinations()))
             study._storage.set_study_system_attr(study._study_id, _TREE_SIZE_KEY, tree_size)
 
 
