@@ -38,18 +38,28 @@ class _TreeNode:
     param_name: str | None = None
     children: dict[float, "_TreeNode"] | None = None
     is_running: bool = False
+    search_space_fingerprint: tuple[int, float, float] | None = None
 
-    def expand(self, param_name: str | None, search_space: Iterable[float]) -> None:
+    def expand(self, param_name: str | None, search_space: list[float]) -> None:
         # If the node is unexpanded, expand it.
         # Otherwise, check if the node is compatible with the given search space.
+        search_space_fingerprint = (
+            (len(search_space), search_space[0], search_space[-1]) if search_space else (0, 0, 0)
+        )
         if self.children is None:
             # Expand the node
             self.param_name = param_name
             self.children = {value: _TreeNode() for value in search_space}
+            self.search_space_fingerprint = search_space_fingerprint
         else:
             if self.param_name != param_name:
                 raise ValueError(f"param_name mismatch: {self.param_name} != {param_name}")
-            if self.children.keys() != set(search_space):
+            if (
+                # NOTE(nabenabe): search space and children are sorted, and the step size is always
+                # fixed due to the Optuna constraint, so the first and last elements and length
+                # check are equivalent to ``children.keys() != set(search_space)``.
+                search_space_fingerprint != self.search_space_fingerprint
+            ):
                 raise ValueError(
                     f"search_space mismatch: {set(self.children.keys())} != {set(search_space)}"
                 )
@@ -61,7 +71,7 @@ class _TreeNode:
         self.expand(None, [])
 
     def add_path(
-        self, params_and_search_spaces: Iterable[tuple[str, Iterable[float], float]]
+        self, params_and_search_spaces: Iterable[tuple[str, list[float], float]]
     ) -> _TreeNode | None:
         # Add a path (i.e. a list of suggested parameters in one trial) to the tree.
         current_node = self
@@ -278,7 +288,7 @@ class BruteForceSampler(BaseSampler):
             study.stop()
 
 
-def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[float]:
+def _enumerate_candidates(param_distribution: BaseDistribution) -> list[float]:
     if isinstance(param_distribution, FloatDistribution):
         if param_distribution.step is None:
             raise ValueError(
