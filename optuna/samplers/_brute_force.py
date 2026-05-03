@@ -294,6 +294,7 @@ class BruteForceSampler(BaseSampler):
             tree_size = int(max(tree_size, tree.count_total_combinations()))
             study._storage.set_study_system_attr(study._study_id, _TREE_SIZE_KEY, tree_size)
 
+
 def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[float]:
     if isinstance(param_distribution, FloatDistribution):
         if param_distribution.step is None:
