@@ -54,9 +54,7 @@ class _TreeNode:
     choices_fingerprint: tuple[int, float, float] | None = None
 
     def expand(self, param_name: str | None, choices: list[float]) -> dict[float, "_TreeNode"]:
-        choices_fingerprint = (
-            (len(choices), choices[0], choices[-1]) if choices else (0, 0, 0)
-        )
+        choices_fingerprint = (len(choices), choices[0], choices[-1]) if choices else (0, 0, 0)
         if self.children is None:
             self.param_name = param_name
             self.children = {value: _TreeNode() for value in choices}
