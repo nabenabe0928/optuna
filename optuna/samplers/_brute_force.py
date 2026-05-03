@@ -26,6 +26,9 @@ if TYPE_CHECKING:
     from optuna.trial import FrozenTrial
 
 
+_TREE_SIZE_KEY = "brute_force:tree_size"
+
+
 @dataclass
 class _TreeNode:
     # This is a class to represent the tree of search space.
@@ -79,6 +82,11 @@ class _TreeNode:
             return 0 if exclude_running and self.is_running else 1
         else:
             return sum(child.count_unexpanded(exclude_running) for child in self.children.values())
+
+    def count_total_combinations(self) -> int:
+        if not self.children:
+            return 1
+        return sum(child.count_total_combinations() for child in self.children.values())
 
     def sample_child(self, rng: np.random.RandomState, exclude_running: bool) -> float:
         assert self.children is not None
@@ -160,6 +168,7 @@ class BruteForceSampler(BaseSampler):
     def __init__(self, seed: int | None = None, avoid_premature_stop: bool = False) -> None:
         self._rng = LazyRandomState(seed)
         self._avoid_premature_stop = avoid_premature_stop
+        self._tree_size_check_interval = 500
 
     def infer_relative_search_space(
         self, study: Study, trial: FrozenTrial
@@ -240,6 +249,7 @@ class BruteForceSampler(BaseSampler):
         state: TrialState,
         values: Sequence[float] | None,
     ) -> None:
+        tree_size = study._storage.get_study_system_attrs(study._study_id).get(_TREE_SIZE_KEY, 0)
         exclude_running = not self._avoid_premature_stop
 
         # We directly query the storage to get trials here instead of `study.get_trials`,
@@ -255,6 +265,9 @@ class BruteForceSampler(BaseSampler):
                 TrialState.FAIL,
             ),
         )
+        if len(trials) < tree_size:
+            # NOTE(nabenabe): No need to stop study. Early return to avoid tree build overhead.
+            return
         tree = _TreeNode()
         self._populate_tree(
             tree,
@@ -276,7 +289,10 @@ class BruteForceSampler(BaseSampler):
 
         if tree.count_unexpanded(exclude_running) == 0:
             study.stop()
-
+        if trial.number % self._tree_size_check_interval == 0:
+            # NOTE(nabenabe): The tree is full size only in `after_trial`.
+            tree_size = int(max(tree_size, tree.count_total_combinations()))
+            study._storage.set_study_system_attr(study._study_id, _TREE_SIZE_KEY, tree_size)
 
 def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[float]:
     if isinstance(param_distribution, FloatDistribution):
