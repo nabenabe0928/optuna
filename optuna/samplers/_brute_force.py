@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import decimal
 from functools import lru_cache
 from typing import Any
+from typing import cast
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -178,7 +179,6 @@ class BruteForceSampler(BaseSampler):
         tree: _TreeNode, trials: Iterable[FrozenTrial], params: dict[str, Any]
     ) -> None:
         # Populate tree under given params from the given trials.
-        is_categorical: dict[str, bool] = {}
         internal_repr_cache: dict[str, dict[CategoricalChoiceType, float]] = {}
 
         def _get_trial_path(trial: FrozenTrial) -> list:
@@ -186,19 +186,17 @@ class BruteForceSampler(BaseSampler):
             for name, dist in trial.distributions.items():
                 if name in params:
                     continue
-                if name not in is_categorical:
-                    is_categorical[name] = isinstance(dist, CategoricalDistribution)
-                    if is_categorical[name]:
-                        assert isinstance(dist, CategoricalDistribution)
+                if name not in internal_repr_cache:
+                    internal_repr_cache[name] = {}  # Numerical dist does not need cache.
+                    if isinstance(dist, CategoricalDistribution):
                         internal_repr_cache[name] = {c: i for i, c in enumerate(dist.choices)}
-                if (cat_repr := internal_repr_cache.get(name)) is not None:
-                    # NOTE: `choices` is guaranteed to be consistent among trials by Optuna design.
+                if cat_repr := internal_repr_cache[name]:
                     cands = _enumerate_candidates(0, len(cat_repr) - 1, 1)
                     value = cat_repr.get(param_val := trial.params[name])
                     if value is None:  # most likely param_val is nan.
                         value = dist.to_internal_repr(param_val)
                 else:
-                    assert isinstance(dist, (IntDistribution, FloatDistribution))
+                    dist = cast("IntDistribution | FloatDistribution", dist)  # mypy redefinition.
                     cands = _enumerate_candidates(dist.low, dist.high, dist.step)
                     value = trial.params[name]
                 trial_path.append((name, cands, value))
