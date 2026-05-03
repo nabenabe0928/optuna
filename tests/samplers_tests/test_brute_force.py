@@ -52,7 +52,7 @@ def test_tree_node_add_paths() -> None:
             ),
             2: _TreeNode(),
         },
-        choices_fingerprint=(3, 0, 2)
+        choices_fingerprint=(3, 0, 2),
     )
 
 
