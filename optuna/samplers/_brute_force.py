@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import decimal
+from functools import lru_cache
 from typing import Any
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from optuna._experimental import experimental_class
+from optuna.distributions import CategoricalChoiceType
 from optuna.distributions import CategoricalDistribution
 from optuna.distributions import FloatDistribution
 from optuna.distributions import IntDistribution
@@ -61,7 +63,7 @@ class _TreeNode:
         self.expand(None, [])
 
     def add_path(
-        self, params_and_search_spaces: Iterable[tuple[str, Iterable[float], float]]
+        self, params_and_search_spaces: list[tuple[str, list[float], float]]
     ) -> _TreeNode | None:
         # Add a path (i.e. a list of suggested parameters in one trial) to the tree.
         current_node = self
@@ -176,20 +178,36 @@ class BruteForceSampler(BaseSampler):
         tree: _TreeNode, trials: Iterable[FrozenTrial], params: dict[str, Any]
     ) -> None:
         # Populate tree under given params from the given trials.
+        is_categorical: dict[str, bool] = {}
+        internal_repr_cache: dict[str, dict[CategoricalChoiceType, float]] = {}
+
+        def _get_trial_path(trial: FrozenTrial) -> list:
+            trial_path = []
+            for name, dist in trial.distributions.items():
+                if name in params:
+                    continue
+                if name not in is_categorical:
+                    is_categorical[name] = isinstance(dist, CategoricalDistribution)
+                    if is_categorical[name]:
+                        assert isinstance(dist, CategoricalDistribution)
+                        internal_repr_cache[name] = {c: i for i, c in enumerate(dist.choices)}
+                if (cat_repr := internal_repr_cache.get(name)) is not None:
+                    # NOTE: `choices` is guaranteed to be consistent among trials by Optuna design.
+                    cands = _enumerate_candidates(0, len(cat_repr) - 1, 1)
+                    value = cat_repr.get(param_val := trial.params[name])
+                    if value is None:  # most likely param_val is nan.
+                        value = dist.to_internal_repr(param_val)
+                else:
+                    assert isinstance(dist, (IntDistribution, FloatDistribution))
+                    cands = _enumerate_candidates(dist.low, dist.high, dist.step)
+                    value = trial.params[name]
+                trial_path.append((name, cands, value))
+            return trial_path
+
         for trial in trials:
             if not all(p in trial.params and trial.params[p] == v for p, v in params.items()):
                 continue
-            leaf = tree.add_path(
-                (
-                    (
-                        param_name,
-                        _enumerate_candidates(param_distribution),
-                        param_distribution.to_internal_repr(trial.params[param_name]),
-                    )
-                    for param_name, param_distribution in trial.distributions.items()
-                    if param_name not in params
-                )
-            )
+            leaf = tree.add_path(_get_trial_path(trial))
             if leaf is not None:
                 # The parameters are on the defined grid.
                 if trial.state.is_finished():
@@ -220,7 +238,14 @@ class BruteForceSampler(BaseSampler):
             ),
         )
         tree = _TreeNode()
-        candidates = _enumerate_candidates(param_distribution)
+        if isinstance(param_distribution, CategoricalDistribution):
+            candidates = _enumerate_candidates(0, len(param_distribution.choices) - 1, 1)
+        elif isinstance(param_distribution, (IntDistribution, FloatDistribution)):
+            candidates = _enumerate_candidates(
+                param_distribution.low, param_distribution.high, param_distribution.step
+            )
+        else:
+            assert False, "Should not reach."
         tree.expand(param_name, candidates)
         # Populating must happen after the initialization above to prevent `tree` from
         # being initialized as an empty graph, which is created with n_jobs > 1
@@ -278,29 +303,24 @@ class BruteForceSampler(BaseSampler):
             study.stop()
 
 
-def _enumerate_candidates(param_distribution: BaseDistribution) -> Sequence[float]:
-    if isinstance(param_distribution, FloatDistribution):
-        if param_distribution.step is None:
-            raise ValueError(
-                "FloatDistribution.step must be given for BruteForceSampler"
-                " (otherwise, the search space will be infinite)."
-            )
-        low = decimal.Decimal(str(param_distribution.low))
-        high = decimal.Decimal(str(param_distribution.high))
-        step = decimal.Decimal(str(param_distribution.step))
-
-        ret = []
-        value = low
-        while value <= high:
-            ret.append(float(value))
-            value += step
-
-        return ret
-    elif isinstance(param_distribution, IntDistribution):
-        return list(
-            range(param_distribution.low, param_distribution.high + 1, param_distribution.step)
+@lru_cache
+def _enumerate_candidates(
+    low: int | float, high: int | float, step: int | float | None
+) -> list[float]:
+    if step is None:
+        raise ValueError(
+            "FloatDistribution.step must be given for BruteForceSampler"
+            " (otherwise, the search space will be infinite)."
         )
-    elif isinstance(param_distribution, CategoricalDistribution):
-        return list(range(len(param_distribution.choices)))  # Internal representations.
+    if isinstance(low, int) and isinstance(high, int) and isinstance(step, int):
+        return list(range(low, high + 1, step))
     else:
-        raise ValueError(f"Unknown distribution {param_distribution}.")
+        low_ = decimal.Decimal(str(low))
+        high_ = decimal.Decimal(str(high))
+        step_ = decimal.Decimal(str(step))
+        ret = []
+        value = low_
+        while value <= high_:
+            ret.append(float(value))
+            value += step_
+        return ret
