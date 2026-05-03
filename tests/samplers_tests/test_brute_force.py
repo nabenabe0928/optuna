@@ -23,15 +23,17 @@ def test_tree_node_add_paths() -> None:
         if leaf.children is None:
             leaf.set_leaf()
 
+    _zs = (0, 0, 0)
     assert tree == _TreeNode(
         param_name="a",
         children={
             0: _TreeNode(
                 param_name="b",
                 children={
-                    0.0: _TreeNode(param_name=None, children={}),
-                    1.0: _TreeNode(param_name=None, children={}),
+                    0.0: _TreeNode(param_name=None, children={}, choices_fingerprint=_zs),
+                    1.0: _TreeNode(param_name=None, children={}, choices_fingerprint=_zs),
                 },
+                choices_fingerprint=(2, 0.0, 1.0),
             ),
             1: _TreeNode(
                 param_name="b",
@@ -39,15 +41,18 @@ def test_tree_node_add_paths() -> None:
                     0.0: _TreeNode(
                         param_name="c",
                         children={
-                            0: _TreeNode(param_name=None, children={}),
+                            0: _TreeNode(param_name=None, children={}, choices_fingerprint=_zs),
                             1: _TreeNode(),
                         },
+                        choices_fingerprint=(2, 0, 1),
                     ),
                     1.0: _TreeNode(),
                 },
+                choices_fingerprint=(2, 0.0, 1.0),
             ),
             2: _TreeNode(),
         },
+        choices_fingerprint=(3, 0, 2),
     )
 
 
