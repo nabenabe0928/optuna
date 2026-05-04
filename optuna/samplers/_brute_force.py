@@ -110,7 +110,7 @@ class _TreeNode:
 
 @experimental_class("3.1.0")
 class BruteForceSampler(BaseSampler):
-    """Sampler using brute force.
+    """Sampler that performs exhaustive search over the define-by-run search space.
 
     This sampler performs exhaustive search on the defined search space.
 
