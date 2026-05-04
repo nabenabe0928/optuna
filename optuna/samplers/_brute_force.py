@@ -204,8 +204,7 @@ class BruteForceSampler(BaseSampler):
         for trial in trials:
             if not all(p in trial.params and trial.params[p] == v for p, v in params.items()):
                 continue
-            leaf = tree.add_path(_get_trial_path(trial))
-            if leaf is not None:
+            if (leaf := tree.add_path(_get_trial_path(trial))) is not None:
                 # The parameters are on the defined grid.
                 if trial.state.is_finished():
                     leaf.set_leaf()
@@ -316,8 +315,7 @@ def _enumerate_candidates(
         high_ = decimal.Decimal(str(high))
         step_ = decimal.Decimal(str(step))
         ret = []
-        value = low_
-        while value <= high_:
-            ret.append(float(value))
-            value += step_
+        while low_ <= high_:
+            ret.append(float(low_))
+            low_ += step_
         return ret
