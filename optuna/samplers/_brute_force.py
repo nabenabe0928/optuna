@@ -192,9 +192,8 @@ class BruteForceSampler(BaseSampler):
                         internal_repr_cache[name] = {c: i for i, c in enumerate(dist.choices)}
                 if cat_repr := internal_repr_cache[name]:
                     cands = _enumerate_candidates(0, len(cat_repr) - 1, 1)
-                    value = cat_repr.get(param_val := trial.params[name])
-                    if value is None:  # most likely param_val is nan.
-                        value = dist.to_internal_repr(param_val)
+                    if (value := cat_repr.get(param_val := trial.params[name])) is None:
+                        value = dist.to_internal_repr(param_val)  # most likely param_val is nan.
                 else:
                     dist = cast("IntDistribution | FloatDistribution", dist)  # mypy redefinition.
                     cands = _enumerate_candidates(dist.low, dist.high, dist.step)
