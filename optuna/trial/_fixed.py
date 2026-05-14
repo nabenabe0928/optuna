@@ -133,6 +133,15 @@ class FixedTrial(BaseTrial):
     def report(self, value: float, step: int) -> None:
         pass
 
+    def report_outcome_constraint(
+        self,
+        constraint_name: str,
+        lhs: float,
+        rhs: float,
+        op: str = "<=",
+    ) -> None:
+        pass
+
     def should_prune(self) -> bool:
         return False
 

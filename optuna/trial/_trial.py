@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import UserDict
 import copy
+import math
 from typing import Any
 from typing import overload
 from typing import TYPE_CHECKING
@@ -18,6 +19,8 @@ from optuna.distributions import CategoricalChoiceType
 from optuna.distributions import CategoricalDistribution
 from optuna.distributions import FloatDistribution
 from optuna.distributions import IntDistribution
+from optuna.study._constrained_optimization import _OUTCOME_CONSTRAINT_OPS_KEY
+from optuna.study._constrained_optimization import _OUTCOME_CONSTRAINTS_KEY
 from optuna.trial._base import _SUGGEST_INT_POSITIONAL_ARGS
 from optuna.trial._base import BaseTrial
 
@@ -513,6 +516,75 @@ class Trial(BaseTrial):
 
         self.storage.set_trial_intermediate_value(self._trial_id, step, value)
         self._cached_frozen_trial.intermediate_values[step] = value
+
+    def report_outcome_constraint(
+        self,
+        constraint_name: str,
+        lhs: float,
+        rhs: float,
+        op: str = "<=",
+    ) -> None:
+        """Report an outcome constraint for this trial.
+
+        The constraint is defined as ``lhs op rhs`` (e.g., ``lhs <= rhs``).
+        A trial is feasible when all reported constraints are satisfied.
+
+        Args:
+            constraint_name:
+                A name to identify this constraint. Must be non-empty.
+            lhs:
+                The left-hand side value of the constraint (computed value).
+            rhs:
+                The right-hand side value of the constraint (threshold).
+                May vary across trials.
+            op:
+                The comparison operator: ``"<="`` or ``">="``  .
+                Must be fixed across trials for a given ``constraint_name``.
+        """
+        if not constraint_name:
+            raise ValueError("constraint_name must be a non-empty string.")
+
+        if op not in ("<=", ">="):
+            raise ValueError(f"op must be '<=' or '>=', got '{op}'.")
+
+        try:
+            lhs = float(lhs)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"The lhs argument is of type '{type(lhs)}' but supposed to be a float."
+            ) from None
+
+        try:
+            rhs = float(rhs)
+        except (TypeError, ValueError):
+            raise TypeError(
+                f"The rhs argument is of type '{type(rhs)}' but supposed to be a float."
+            ) from None
+
+        if math.isnan(lhs) or math.isnan(rhs):
+            raise ValueError("lhs and rhs must not be NaN.")
+
+        study_attrs = self.study._storage.get_study_system_attrs(self.study._study_id)
+        ops_registry: dict[str, str] = study_attrs.get(_OUTCOME_CONSTRAINT_OPS_KEY, {})
+
+        if constraint_name in ops_registry:
+            if ops_registry[constraint_name] != op:
+                raise ValueError(
+                    f"Constraint '{constraint_name}' was previously registered with "
+                    f"op='{ops_registry[constraint_name]}', but got op='{op}'."
+                )
+        else:
+            ops_registry[constraint_name] = op
+            self.study._storage.set_study_system_attr(
+                self.study._study_id, _OUTCOME_CONSTRAINT_OPS_KEY, ops_registry
+            )
+
+        raw: dict[str, Any] = dict(
+            self._cached_frozen_trial.system_attrs.get(_OUTCOME_CONSTRAINTS_KEY, {})
+        )
+        raw[constraint_name] = {"lhs": lhs, "rhs": rhs, "op": op}
+        self.storage.set_trial_system_attr(self._trial_id, _OUTCOME_CONSTRAINTS_KEY, raw)
+        self._cached_frozen_trial.system_attrs[_OUTCOME_CONSTRAINTS_KEY] = raw
 
     def should_prune(self) -> bool:
         """Suggest whether the trial should be pruned or not.

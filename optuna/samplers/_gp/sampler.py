@@ -11,6 +11,7 @@ from optuna._experimental import experimental_class
 from optuna._experimental import warn_experimental_argument
 from optuna.samplers._base import _CONSTRAINTS_KEY
 from optuna.samplers._base import _INDEPENDENT_SAMPLING_WARNING_TEMPLATE
+from optuna.study._constrained_optimization import _has_constraints
 from optuna.samplers._base import _process_constraints_after_trial
 from optuna.samplers._base import BaseSampler
 from optuna.samplers._lazy_random_state import LazyRandomState
@@ -398,7 +399,8 @@ class GPSampler(BaseSampler):
 
         best_params: np.ndarray | None
         acqf: acqf_module.BaseAcquisitionFunc
-        if self._constraints_func is None:
+        has_constraints = self._constraints_func is not None or _has_constraints(completed_trials)
+        if not has_constraints:
             if n_objectives == 1:
                 assert len(gprs_list) == 1
                 acqf = acqf_module.LogEI(

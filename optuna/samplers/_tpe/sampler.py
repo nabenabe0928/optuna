@@ -18,6 +18,7 @@ from optuna._warnings import optuna_warn
 from optuna.logging import get_logger
 from optuna.samplers._base import _CONSTRAINTS_KEY
 from optuna.samplers._base import _INDEPENDENT_SAMPLING_WARNING_TEMPLATE
+from optuna.study._constrained_optimization import _has_constraints
 from optuna.samplers._base import _process_constraints_after_trial
 from optuna.samplers._base import BaseSampler
 from optuna.samplers._lazy_random_state import LazyRandomState
@@ -547,7 +548,7 @@ class TPESampler(BaseSampler):
             study,
             trials,
             self._gamma(n),
-            self._constraints_func is not None,
+            self._constraints_func is not None or _has_constraints(trials),
         )
 
         mpe_below = self._build_parzen_estimator(
@@ -834,7 +835,12 @@ def _calculate_weights_below_for_multi_objective(
     constraints_func: Callable[[FrozenTrial], Sequence[float]] | None,
 ) -> np.ndarray:
     def _feasible(trial: FrozenTrial) -> bool:
-        return constraints_func is None or all(c <= 0 for c in constraints_func(trial))
+        if constraints_func is not None:
+            return all(c <= 0 for c in constraints_func(trial))
+        constraint = trial.system_attrs.get(_CONSTRAINTS_KEY)
+        if constraint is not None:
+            return all(c <= 0 for c in constraint)
+        return True
 
     is_feasible = np.asarray([_feasible(t) for t in below_trials])
     weights_below = np.where(is_feasible, 1.0, EPS)  # Assign EPS to infeasible trials.

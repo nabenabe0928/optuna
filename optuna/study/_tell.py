@@ -8,6 +8,8 @@ import optuna
 from optuna import logging
 from optuna import pruners
 from optuna._warnings import optuna_warn
+from optuna.study._constrained_optimization import _OUTCOME_CONSTRAINTS_KEY
+from optuna.study._constrained_optimization import _process_outcome_constraints
 from optuna.trial import FrozenTrial
 from optuna.trial import TrialState
 
@@ -167,6 +169,19 @@ def _tell_with_warning(
 
     # Post-processing and storing the trial.
     try:
+        # Process outcome constraints reported via trial.report_outcome_constraint().
+        if frozen_trial.system_attrs.get(_OUTCOME_CONSTRAINTS_KEY):
+            sampler_has_constraints_func = (
+                hasattr(study.sampler, "_constraints_func")
+                and study.sampler._constraints_func is not None
+            )
+            if sampler_has_constraints_func:
+                raise ValueError(
+                    "Cannot use both trial.report_outcome_constraint() and "
+                    "constraints_func in the sampler. Use one or the other."
+                )
+            _process_outcome_constraints(study, frozen_trial, state)
+
         # Sampler defined trial post-processing.
         study = pruners._filter_study(study, frozen_trial)
         study.sampler.after_trial(study, frozen_trial, state, values)

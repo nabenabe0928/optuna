@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from optuna.samplers.nsgaii._constraints_evaluation import _constrained_dominates
 from optuna.samplers.nsgaii._crossover import perform_crossover
 from optuna.samplers.nsgaii._crossovers._base import BaseCrossover
+from optuna.study._constrained_optimization import _has_constraints
 from optuna.study._multi_objective import _dominates
 
 
@@ -72,7 +73,8 @@ class NSGAIIChildGenerationStrategy:
         Returns:
             A dictionary containing the parameter names and parameter's values.
         """
-        dominates = _dominates if self._constraints_func is None else _constrained_dominates
+        has_constraints = self._constraints_func is not None or _has_constraints(parent_population)
+        dominates = _constrained_dominates if has_constraints else _dominates
         # We choose a child based on the specified crossover method.
         if self._rng.rng.rand() < self._crossover_prob:
             child_params = perform_crossover(
