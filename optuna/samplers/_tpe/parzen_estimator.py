@@ -9,12 +9,7 @@ from optuna.distributions import CategoricalDistribution
 from optuna.distributions import FloatDistribution
 from optuna.distributions import IntDistribution
 from optuna.samplers._tpe.probability_distributions import _BatchedCategoricalDistributions
-from optuna.samplers._tpe.probability_distributions import (
-    _BatchedDiscreteTruncLogNormDistributions,
-)
-from optuna.samplers._tpe.probability_distributions import _BatchedDiscreteTruncNormDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedDistributions
-from optuna.samplers._tpe.probability_distributions import _BatchedTruncLogNormDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedTruncNormDistributions
 from optuna.samplers._tpe.probability_distributions import _MixtureOfProductDistribution
 
@@ -111,54 +106,30 @@ class _ParzenEstimator:
             low = np.log(low)
             high = np.log(high)
 
-        mus = observations
-
         def compute_sigmas() -> np.ndarray:
-            sorted_indices = np.argsort(mus)
-            sorted_mus = mus[sorted_indices]
-            sorted_mus_with_endpoints = np.empty(len(mus) + 2, dtype=float)
-            sorted_mus_with_endpoints[0] = low
+            sorted_indices = np.argsort(observations)
+            sorted_mus = observations[sorted_indices]
+            sorted_mus_with_endpoints = np.empty(len(observations) + 2, dtype=float)
+            sorted_mus_with_endpoints[[0, -1]] = [low, high]
             sorted_mus_with_endpoints[1:-1] = sorted_mus
-            sorted_mus_with_endpoints[-1] = high
 
-            sorted_sigmas = np.maximum(
-                sorted_mus_with_endpoints[1:-1] - sorted_mus_with_endpoints[0:-2],
-                sorted_mus_with_endpoints[2:] - sorted_mus_with_endpoints[1:-1],
+            delta_mus_right = sorted_mus_with_endpoints[2:] - sorted_mus_with_endpoints[1:-1]
+            delta_mus_left = sorted_mus_with_endpoints[1:-1] - sorted_mus_with_endpoints[:-2]
+            sorted_sigmas = np.maximum(delta_mus_right, delta_mus_left)
+            if sorted_mus_with_endpoints.shape[0] >= 4:
+                sorted_sigmas[[0, -1]] = [delta_mus_right[0], delta_mus_left[-1]]
+
+            return np.clip(
+                sorted_sigmas[np.argsort(sorted_indices)],
+                (high - low) / min(100.0, len(observations) + 2.0),
+                high - low,
             )
 
-            if sorted_mus_with_endpoints.shape[0] >= 4:
-                sorted_sigmas[0] = sorted_mus_with_endpoints[2] - sorted_mus_with_endpoints[1]
-                sorted_sigmas[-1] = (
-                    sorted_mus_with_endpoints[-2] - sorted_mus_with_endpoints[-3]
-                )
-
-            sigmas = sorted_sigmas[np.argsort(sorted_indices)]
-
-            # We adjust the range of the 'sigmas'.
-            maxsigma = high - low
-            n_kernels = len(observations) + 1  # NOTE(sawa3030): +1 for prior.
-            minsigma = (high - low) / min(100.0, (1.0 + n_kernels))
-            return np.asarray(np.clip(sigmas, minsigma, maxsigma))
-
-        sigmas = compute_sigmas()
-        mus = np.append(mus, [0.5 * (low + high)])
-        sigmas = np.append(sigmas, [high - low])
-
-        if search_space.step is None:
-            if not search_space.log:
-                return _BatchedTruncNormDistributions(
-                    mus, sigmas, search_space.low, search_space.high
-                )
-            else:
-                return _BatchedTruncLogNormDistributions(
-                    mus, sigmas, search_space.low, search_space.high
-                )
-        else:
-            if not search_space.log:
-                return _BatchedDiscreteTruncNormDistributions(
-                    mus, sigmas, search_space.low, search_space.high, search_space.step
-                )
-            else:
-                return _BatchedDiscreteTruncLogNormDistributions(
-                    mus, sigmas, search_space.low, search_space.high, search_space.step
-                )
+        return _BatchedTruncNormDistributions(
+            mu=np.append(observations, [0.5 * (low + high)]),
+            sigma=np.append(compute_sigmas(), [high - low]),
+            low=search_space.low,
+            high=search_space.high,
+            is_log=search_space.log,
+            step=search_space.step or 0.0,
+        )
