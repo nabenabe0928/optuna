@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-import json
 import math
 from typing import Any
 from typing import cast
@@ -11,7 +10,6 @@ import numpy as np
 
 from optuna._hypervolume import compute_hypervolume
 from optuna._hypervolume.hssp import _solve_hssp
-from optuna._warnings import optuna_warn
 from optuna.samplers._base import _CONSTRAINTS_KEY
 from optuna.samplers._base import _process_constraints_after_trial
 from optuna.samplers._base import BaseSampler
@@ -63,8 +61,6 @@ class TPESampler(BaseSampler):
         self._multivariate = multivariate
         self._search_space = IntersectionSearchSpace()
         self._constraints_func = constraints_func
-        # NOTE(nabenabe0928): Users can overwrite _ParzenEstimator to customize the TPE behavior.
-        self._parzen_estimator_cls = _ParzenEstimator
 
     def reseed_rng(self) -> None:
         self._rng.rng.seed()
@@ -81,18 +77,11 @@ class TPESampler(BaseSampler):
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
     ) -> dict[str, Any]:
-        return self._sample_relative(study, trial, search_space)
-
-    def _sample_relative(
-        self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
-    ) -> dict[str, Any]:
         if search_space == {}:
             return {}
         trials = study._get_trials(deepcopy=False, states=(TrialState.COMPLETE,), use_cache=True)
-        # If the number of samples is insufficient, we run random trial.
         if len(trials) < self._n_startup_trials:
-            return {}
-
+            return {}  # Fall back to sample_independent.
         return self._sample(study, trial, search_space)
 
     def sample_independent(
@@ -103,7 +92,6 @@ class TPESampler(BaseSampler):
         param_distribution: BaseDistribution,
     ) -> Any:
         trials = study._get_trials(deepcopy=False, states=(TrialState.COMPLETE,), use_cache=True)
-        # If the number of samples is insufficient, we run random trial.
         if len(trials) < self._n_startup_trials:
             return self._random_sampler.sample_independent(
                 study, trial, param_name, param_distribution
@@ -152,24 +140,16 @@ class TPESampler(BaseSampler):
         handle_below: bool,
     ) -> _ParzenEstimator:
         observations = self._get_internal_repr(trials, search_space)
-        if handle_below and study._is_multi_objective():
-            param_mask_below = [
-                search_space.keys() <= trial.params.keys() for trial in trials
-            ]
-            weights_below = _calculate_weights_below_for_multi_objective(
-                study, trials, self._constraints_func
-            )[param_mask_below]
-            assert np.isfinite(weights_below).all()
-            mpe = self._parzen_estimator_cls(
-                observations, search_space, default_weights, weights_below
-            )
-        else:
-            mpe = self._parzen_estimator_cls(observations, search_space, default_weights)
+        if not study._is_multi_objective() or not handle_below:
+            return _ParzenEstimator(observations, search_space, default_weights)
 
-        if not isinstance(mpe, _ParzenEstimator):
-            raise RuntimeError("_parzen_estimator_cls must override _ParzenEstimator.")
-
-        return mpe
+        weights_below = _calculate_weights_below_for_multi_objective(
+            study, trials, self._constraints_func
+        )
+        assert np.isfinite(weights_below).all()
+        return _ParzenEstimator(
+            observations, search_space, default_weights, weights_below
+        )
 
     def _compute_acquisition_func(
         self,
@@ -181,13 +161,6 @@ class TPESampler(BaseSampler):
         log_likelihoods_above = mpe_above.log_pdf(samples)
         acq_func_vals = log_likelihoods_below - log_likelihoods_above
         return acq_func_vals
-
-    @classmethod
-    def _compare(
-        cls, samples: dict[str, np.ndarray], acquisition_func_vals: np.ndarray
-    ) -> dict[str, int | float]:
-        best_idx = np.argmax(acquisition_func_vals)
-        return {k: v[best_idx].item() for k, v in samples.items()}
 
     def before_trial(self, study: Study, trial: FrozenTrial) -> None:
         self._random_sampler.before_trial(study, trial)
@@ -213,7 +186,6 @@ def _split_trials(
 ) -> tuple[list[FrozenTrial], list[FrozenTrial]]:
     complete_trials = []
     infeasible_trials = []
-
     for trial in trials:
         if constraints_enabled and _get_infeasible_trial_score(trial) > 0:
             infeasible_trials.append(trial)
@@ -222,18 +194,13 @@ def _split_trials(
         else:
             assert False
 
-    # We divide data into below and above.
     below_complete, above_complete = _split_complete_trials(complete_trials, study, n_below)
-    # This ensures `n_below` is non-negative to prevent unexpected trial splits.
     n_below = max(0, n_below - len(below_complete))
     below_infeasible, above_infeasible = _split_infeasible_trials(infeasible_trials, n_below)
-
-    below_trials = below_complete + below_infeasible
-    above_trials = above_complete + above_infeasible
-    below_trials.sort(key=lambda trial: trial.number)
-    above_trials.sort(key=lambda trial: trial.number)
-
-    return below_trials, above_trials
+    return (
+        sorted(below_complete + below_infeasible, key=lambda trial: trial.number),
+        sorted(above_complete + above_infeasible, key=lambda trial: trial.number),
+    )
 
 
 def _split_complete_trials(
