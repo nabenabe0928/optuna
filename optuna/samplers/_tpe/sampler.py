@@ -19,8 +19,6 @@ from optuna.samplers._lazy_random_state import LazyRandomState
 from optuna.samplers._random import RandomSampler
 from optuna.samplers._tpe.parzen_estimator import _ParzenEstimator
 from optuna.search_space import IntersectionSearchSpace
-from optuna.search_space.group_decomposed import _GroupDecomposedSearchSpace
-from optuna.search_space.group_decomposed import _SearchSpaceGroup
 from optuna.study._multi_objective import _fast_non_domination_rank
 from optuna.study._multi_objective import _is_pareto_front
 from optuna.study._study_direction import StudyDirection
@@ -74,24 +72,6 @@ class TPESampler(BaseSampler):
             <http://proceedings.mlr.press/v80/falkner18a.html>`__ and `our article
             <https://medium.com/optuna/multivariate-tpe-makes-optuna-even-more-powerful-63c4bfbaebe2>`__
             for more details.
-        group:
-            If this and ``multivariate`` are :obj:`True`, the multivariate TPE with the group
-            decomposed search space is used when suggesting parameters.
-            The sampling algorithm decomposes the search space based on past trials and samples
-            from the joint distribution in each decomposed subspace.
-            The decomposed subspaces are a partition of the whole search space. Each subspace
-            is a maximal subset of the whole search space, which satisfies the following:
-            for a trial in completed trials, the intersection of the subspace and the search space
-            of the trial becomes subspace itself or an empty set.
-            Sampling from the joint distribution on the subspace is realized by multivariate TPE.
-            If ``group`` is :obj:`True`, ``multivariate`` must be :obj:`True` as well.
-        warn_independent_sampling:
-            If this is :obj:`True` and ``multivariate=True``, a warning message is emitted when
-            the value of a parameter is sampled by using an independent sampler.
-            If ``multivariate=False``, this flag has no effect.
-        constant_liar:
-            If :obj:`True`, penalize running trials to avoid suggesting parameter configurations
-            nearby.
         constraints_func:
             An optional function that computes the objective constraints. It must take a
             :class:`~optuna.trial.FrozenTrial` and return the constraints. The return value must
@@ -101,8 +81,6 @@ class TPESampler(BaseSampler):
             considered feasible if and only if all values are equal to 0 or smaller.
 
             The ``constraints_func`` will be evaluated after each successful trial.
-            The function won't be called when trials fail or they are pruned, but this behavior is
-            subject to change in the future releases.
     """
 
     def __init__(
@@ -110,8 +88,6 @@ class TPESampler(BaseSampler):
         *,
         seed: int | None = None,
         multivariate: bool = False,
-        group: bool = False,
-        constant_liar: bool = False,
         constraints_func: Callable[[FrozenTrial], Sequence[float]] | None = None,
     ) -> None:
         self._n_startup_trials = 10
@@ -121,21 +97,10 @@ class TPESampler(BaseSampler):
         self._random_sampler = RandomSampler(seed=seed)
 
         self._multivariate = multivariate
-        self._group = group
-        self._group_decomposed_search_space: _GroupDecomposedSearchSpace | None = None
-        self._search_space_group: _SearchSpaceGroup | None = None
-        self._search_space = IntersectionSearchSpace(include_pruned=True)
-        self._constant_liar = constant_liar
+        self._search_space = IntersectionSearchSpace()
         self._constraints_func = constraints_func
         # NOTE(nabenabe0928): Users can overwrite _ParzenEstimator to customize the TPE behavior.
         self._parzen_estimator_cls = _ParzenEstimator
-
-        if group:
-            if not multivariate:
-                raise ValueError(
-                    "``group`` option can only be enabled when ``multivariate`` is enabled."
-                )
-            self._group_decomposed_search_space = _GroupDecomposedSearchSpace(True)
 
     def reseed_rng(self) -> None:
         self._rng.rng.seed()
@@ -148,22 +113,7 @@ class TPESampler(BaseSampler):
             return {}
 
         search_space: dict[str, BaseDistribution] = {}
-        use_trial_cache = self._multivariate or not self._constant_liar
-
-        if self._group:
-            assert self._group_decomposed_search_space is not None
-            self._search_space_group = self._group_decomposed_search_space.calculate(
-                study, use_trial_cache
-            )
-            for sub_space in self._search_space_group.search_spaces:
-                # Sort keys because Python's string hashing is nondeterministic.
-                for name, distribution in sorted(sub_space.items()):
-                    if distribution.single():
-                        continue
-                    search_space[name] = distribution
-            return search_space
-
-        for name, distribution in self._search_space.calculate(study, use_trial_cache).items():
+        for name, distribution in self._search_space.calculate(study, self._multivariate).items():
             if distribution.single():
                 continue
             search_space[name] = distribution
@@ -173,29 +123,7 @@ class TPESampler(BaseSampler):
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
     ) -> dict[str, Any]:
-        if self._group:
-            assert self._search_space_group is not None
-            params = {}
-            for sub_space in self._search_space_group.search_spaces:
-                _search_space = {}
-                # Sort keys because Python's string hashing is nondeterministic.
-                for name, distribution in sorted(sub_space.items()):
-                    if distribution.single():
-                        continue
-                    if name not in search_space:
-                        # When used together with PartialFixedSampler, the search space may be
-                        # smaller than what is inferred from the study.
-                        continue
-                    _search_space[name] = distribution
-                params.update(self._sample_relative(study, trial, _search_space))
-        else:
-            params = self._sample_relative(study, trial, search_space)
-
-        if params != {} and self._constant_liar:
-            # Share the params obtained by the relative sampling with the other processes.
-            params_str = json.dumps(params)
-            study._storage.set_trial_system_attr(trial._trial_id, _RELATIVE_PARAMS_KEY, params_str)
-        return params
+        return self._sample_relative(study, trial, search_space)
 
     def _sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
@@ -203,7 +131,7 @@ class TPESampler(BaseSampler):
         if search_space == {}:
             return {}
 
-        states = (TrialState.COMPLETE, TrialState.PRUNED)
+        states = (TrialState.COMPLETE, )
         trials = study._get_trials(deepcopy=False, states=states, use_cache=True)
         # If the number of samples is insufficient, we run random trial.
         if len(trials) < self._n_startup_trials:
@@ -218,7 +146,7 @@ class TPESampler(BaseSampler):
         param_name: str,
         param_distribution: BaseDistribution,
     ) -> Any:
-        states = (TrialState.COMPLETE, TrialState.PRUNED)
+        states = (TrialState.COMPLETE, )
         trials = study._get_trials(deepcopy=False, states=states, use_cache=True)
 
         # If the number of samples is insufficient, we run random trial.
@@ -262,17 +190,7 @@ class TPESampler(BaseSampler):
     def _sample(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
     ) -> dict[str, Any]:
-        if self._constant_liar:
-            states = [TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING]
-        else:
-            states = [TrialState.COMPLETE, TrialState.PRUNED]
-        use_cache = not self._constant_liar
-        trials = study._get_trials(deepcopy=False, states=states, use_cache=use_cache)
-
-        if self._constant_liar:
-            # For constant_liar, filter out the current trial.
-            trials = [t for t in trials if trial.number != t.number]
-
+        trials = study._get_trials(deepcopy=False, states=[TrialState.COMPLETE], use_cache=True)
         # We divide data into below and above.
         n = sum(trial.state != TrialState.RUNNING for trial in trials)  # Ignore running trials.
         below_trials, above_trials = _split_trials(
@@ -361,7 +279,7 @@ class TPESampler(BaseSampler):
         state: TrialState,
         values: Sequence[float] | None,
     ) -> None:
-        assert state in [TrialState.COMPLETE, TrialState.FAIL, TrialState.PRUNED]
+        assert state in [TrialState.COMPLETE, TrialState.FAIL]
         if self._constraints_func is not None:
             _process_constraints_after_trial(self._constraints_func, study, trial, state)
         self._random_sampler.after_trial(study, trial, state, values)
@@ -378,7 +296,6 @@ def _split_trials(
     study: Study, trials: list[FrozenTrial], n_below: int, constraints_enabled: bool
 ) -> tuple[list[FrozenTrial], list[FrozenTrial]]:
     complete_trials = []
-    pruned_trials = []
     running_trials = []
     infeasible_trials = []
 
@@ -391,8 +308,6 @@ def _split_trials(
             infeasible_trials.append(trial)
         elif trial.state == TrialState.COMPLETE:
             complete_trials.append(trial)
-        elif trial.state == TrialState.PRUNED:
-            pruned_trials.append(trial)
         else:
             assert False
 
@@ -400,13 +315,10 @@ def _split_trials(
     below_complete, above_complete = _split_complete_trials(complete_trials, study, n_below)
     # This ensures `n_below` is non-negative to prevent unexpected trial splits.
     n_below = max(0, n_below - len(below_complete))
-    below_pruned, above_pruned = _split_pruned_trials(pruned_trials, study, n_below)
-    # This ensures `n_below` is non-negative to prevent unexpected trial splits.
-    n_below = max(0, n_below - len(below_pruned))
     below_infeasible, above_infeasible = _split_infeasible_trials(infeasible_trials, n_below)
 
-    below_trials = below_complete + below_pruned + below_infeasible
-    above_trials = above_complete + above_pruned + above_infeasible + running_trials
+    below_trials = below_complete + below_infeasible
+    above_trials = above_complete + above_infeasible + running_trials
     below_trials.sort(key=lambda trial: trial.number)
     above_trials.sort(key=lambda trial: trial.number)
 
@@ -468,27 +380,6 @@ def _split_complete_trials_multi_objective(
     below_trials = [trials[i] for i in range(len(trials)) if i in below_indices_set]
     above_trials = [trials[i] for i in range(len(trials)) if i not in below_indices_set]
     return below_trials, above_trials
-
-
-def _get_pruned_trial_score(trial: FrozenTrial, study: Study) -> tuple[float, float]:
-    if len(trial.intermediate_values) > 0:
-        step, intermediate_value = max(trial.intermediate_values.items())
-        if math.isnan(intermediate_value):
-            return -step, float("inf")
-        elif study.direction == StudyDirection.MINIMIZE:
-            return -step, intermediate_value
-        else:
-            return -step, -intermediate_value
-    else:
-        return 1, 0.0
-
-
-def _split_pruned_trials(
-    trials: Sequence[FrozenTrial], study: Study, n_below: int
-) -> tuple[list[FrozenTrial], list[FrozenTrial]]:
-    n_below = min(n_below, len(trials))
-    sorted_trials = sorted(trials, key=lambda trial: _get_pruned_trial_score(trial, study))
-    return sorted_trials[:n_below], sorted_trials[n_below:]
 
 
 def _get_infeasible_trial_score(trial: FrozenTrial) -> float:
