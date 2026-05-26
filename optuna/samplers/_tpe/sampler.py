@@ -36,12 +36,6 @@ if TYPE_CHECKING:
 
 EPS = 1e-12
 
-_RELATIVE_PARAMS_KEY = "tpe:relative_params"
-
-
-def default_gamma(x: int) -> int:
-    return min(math.ceil(0.1 * x), 25)
-
 
 def default_weights(x: int) -> np.ndarray:
     if x == 0:
@@ -55,34 +49,6 @@ def default_weights(x: int) -> np.ndarray:
 
 
 class TPESampler(BaseSampler):
-    """Sampler using TPE (Tree-structured Parzen Estimator) algorithm.
-
-    On each trial, for each parameter, TPE fits one Gaussian Mixture Model (GMM) ``l(x)`` to
-    the set of parameter values associated with the best objective values, and another GMM
-    ``g(x)`` to the remaining parameter values. It chooses the parameter value ``x`` that
-    maximizes the ratio ``l(x)/g(x)``.
-
-    Args:
-        seed:
-            Seed for random number generator.
-        multivariate:
-            If this is :obj:`True`, the multivariate TPE is used when suggesting parameters.
-            The multivariate TPE is reported to outperform the independent TPE. See `BOHB: Robust
-            and Efficient Hyperparameter Optimization at Scale
-            <http://proceedings.mlr.press/v80/falkner18a.html>`__ and `our article
-            <https://medium.com/optuna/multivariate-tpe-makes-optuna-even-more-powerful-63c4bfbaebe2>`__
-            for more details.
-        constraints_func:
-            An optional function that computes the objective constraints. It must take a
-            :class:`~optuna.trial.FrozenTrial` and return the constraints. The return value must
-            be a sequence of :obj:`float` s. A value strictly larger than 0 means that a
-            constraints is violated. A value equal to or smaller than 0 is considered feasible.
-            If ``constraints_func`` returns more than one value for a trial, that trial is
-            considered feasible if and only if all values are equal to 0 or smaller.
-
-            The ``constraints_func`` will be evaluated after each successful trial.
-    """
-
     def __init__(
         self,
         *,
@@ -92,10 +58,8 @@ class TPESampler(BaseSampler):
     ) -> None:
         self._n_startup_trials = 10
         self._n_ei_candidates = 24
-
         self._rng = LazyRandomState(seed)
         self._random_sampler = RandomSampler(seed=seed)
-
         self._multivariate = multivariate
         self._search_space = IntersectionSearchSpace()
         self._constraints_func = constraints_func
@@ -111,14 +75,8 @@ class TPESampler(BaseSampler):
     ) -> dict[str, BaseDistribution]:
         if not self._multivariate:
             return {}
-
-        search_space: dict[str, BaseDistribution] = {}
-        for name, distribution in self._search_space.calculate(study, self._multivariate).items():
-            if distribution.single():
-                continue
-            search_space[name] = distribution
-
-        return search_space
+        complete_trials = study.get_trials(deepcopy=False, states=(TrialState.COMPLETE,))
+        return complete_trials[0].distributions if complete_trials else {}
 
     def sample_relative(
         self, study: Study, trial: FrozenTrial, search_space: dict[str, BaseDistribution]
@@ -130,9 +88,7 @@ class TPESampler(BaseSampler):
     ) -> dict[str, Any]:
         if search_space == {}:
             return {}
-
-        states = (TrialState.COMPLETE, )
-        trials = study._get_trials(deepcopy=False, states=states, use_cache=True)
+        trials = study._get_trials(deepcopy=False, states=(TrialState.COMPLETE,), use_cache=True)
         # If the number of samples is insufficient, we run random trial.
         if len(trials) < self._n_startup_trials:
             return {}
@@ -146,45 +102,23 @@ class TPESampler(BaseSampler):
         param_name: str,
         param_distribution: BaseDistribution,
     ) -> Any:
-        states = (TrialState.COMPLETE, )
-        trials = study._get_trials(deepcopy=False, states=states, use_cache=True)
-
+        trials = study._get_trials(deepcopy=False, states=(TrialState.COMPLETE,), use_cache=True)
         # If the number of samples is insufficient, we run random trial.
         if len(trials) < self._n_startup_trials:
             return self._random_sampler.sample_independent(
                 study, trial, param_name, param_distribution
             )
-
         return self._sample(study, trial, {param_name: param_distribution})[param_name]
-
-    def _get_params(self, trial: FrozenTrial) -> dict[str, Any]:
-        if trial.state.is_finished() or not self._multivariate:
-            # NOTE(not522): If not multivariate, `relative_params` does not exist and
-            # `system_attrs` access will be unnecessary, so we skip it.
-            return trial.params
-
-        if (params_str := trial.system_attrs.get(_RELATIVE_PARAMS_KEY)) is None:
-            return trial.params
-        try:
-            params = json.loads(params_str)
-        except json.JSONDecodeError:
-            # A race condition can occur when multiple workers write chunks
-            # concurrently. If the JSON is incomplete, fall back to trial.params.
-            return trial.params
-
-        params.update(trial.params)
-        return params
 
     def _get_internal_repr(
         self, trials: list[FrozenTrial], search_space: dict[str, BaseDistribution]
     ) -> dict[str, np.ndarray]:
         values: dict[str, list[float]] = {param_name: [] for param_name in search_space}
         for trial in trials:
-            params = self._get_params(trial)
-            if search_space.keys() <= params.keys():
-                for param_name, distribution in search_space.items():
-                    param = params[param_name]
-                    values[param_name].append(distribution.to_internal_repr(param))
+            params = trial.params
+            for param_name, distribution in search_space.items():
+                param = params[param_name]
+                values[param_name].append(distribution.to_internal_repr(param))
         return {k: np.asarray(v) for k, v in values.items()}
 
     def _sample(
@@ -192,26 +126,23 @@ class TPESampler(BaseSampler):
     ) -> dict[str, Any]:
         trials = study._get_trials(deepcopy=False, states=[TrialState.COMPLETE], use_cache=True)
         # We divide data into below and above.
-        n = sum(trial.state != TrialState.RUNNING for trial in trials)  # Ignore running trials.
+        n_below = min(math.ceil(0.1 * len(trials)), 25)
         below_trials, above_trials = _split_trials(
-            study, trials, default_gamma(n), self._constraints_func is not None
+            study, trials, n_below, self._constraints_func is not None
         )
-
         mpe_below = self._build_parzen_estimator(
             study, search_space, below_trials, handle_below=True
         )
         mpe_above = self._build_parzen_estimator(
             study, search_space, above_trials, handle_below=False
         )
-
         samples_below = mpe_below.sample(self._rng.rng, self._n_ei_candidates)
         acq_func_vals = self._compute_acquisition_func(samples_below, mpe_below, mpe_above)
-        ret = TPESampler._compare(samples_below, acq_func_vals)
-
-        for param_name, dist in search_space.items():
-            ret[param_name] = dist.to_external_repr(ret[param_name])
-
-        return ret
+        best_idx = np.argmax(acq_func_vals)
+        return {
+            k: search_space[k].to_external_repr(v[best_idx].item())
+            for k, v in samples_below.items()
+        }
 
     def _build_parzen_estimator(
         self,
@@ -223,7 +154,7 @@ class TPESampler(BaseSampler):
         observations = self._get_internal_repr(trials, search_space)
         if handle_below and study._is_multi_objective():
             param_mask_below = [
-                search_space.keys() <= self._get_params(trial).keys() for trial in trials
+                search_space.keys() <= trial.params.keys() for trial in trials
             ]
             weights_below = _calculate_weights_below_for_multi_objective(
                 study, trials, self._constraints_func
@@ -255,17 +186,6 @@ class TPESampler(BaseSampler):
     def _compare(
         cls, samples: dict[str, np.ndarray], acquisition_func_vals: np.ndarray
     ) -> dict[str, int | float]:
-        sample_size = next(iter(samples.values())).size
-        if sample_size == 0:
-            raise ValueError(f"The size of `samples` must be positive, but got {sample_size}.")
-
-        if sample_size != acquisition_func_vals.size:
-            raise ValueError(
-                "The sizes of `samples` and `acquisition_func_vals` must be same, but got "
-                "(samples.size, acquisition_func_vals.size) = "
-                f"({sample_size}, {acquisition_func_vals.size})."
-            )
-
         best_idx = np.argmax(acquisition_func_vals)
         return {k: v[best_idx].item() for k, v in samples.items()}
 
@@ -273,13 +193,9 @@ class TPESampler(BaseSampler):
         self._random_sampler.before_trial(study, trial)
 
     def after_trial(
-        self,
-        study: Study,
-        trial: FrozenTrial,
-        state: TrialState,
-        values: Sequence[float] | None,
+        self, study: Study, trial: FrozenTrial, state: TrialState, values: Sequence[float] | None
     ) -> None:
-        assert state in [TrialState.COMPLETE, TrialState.FAIL]
+        assert state == TrialState.COMPLETE
         if self._constraints_func is not None:
             _process_constraints_after_trial(self._constraints_func, study, trial, state)
         self._random_sampler.after_trial(study, trial, state, values)
@@ -296,15 +212,10 @@ def _split_trials(
     study: Study, trials: list[FrozenTrial], n_below: int, constraints_enabled: bool
 ) -> tuple[list[FrozenTrial], list[FrozenTrial]]:
     complete_trials = []
-    running_trials = []
     infeasible_trials = []
 
     for trial in trials:
-        if trial.state == TrialState.RUNNING:
-            # We should check if the trial is RUNNING before the feasibility check
-            # because its constraint values have not yet been set.
-            running_trials.append(trial)
-        elif constraints_enabled and _get_infeasible_trial_score(trial) > 0:
+        if constraints_enabled and _get_infeasible_trial_score(trial) > 0:
             infeasible_trials.append(trial)
         elif trial.state == TrialState.COMPLETE:
             complete_trials.append(trial)
@@ -318,7 +229,7 @@ def _split_trials(
     below_infeasible, above_infeasible = _split_infeasible_trials(infeasible_trials, n_below)
 
     below_trials = below_complete + below_infeasible
-    above_trials = above_complete + above_infeasible + running_trials
+    above_trials = above_complete + above_infeasible
     below_trials.sort(key=lambda trial: trial.number)
     above_trials.sort(key=lambda trial: trial.number)
 
@@ -339,9 +250,9 @@ def _split_complete_trials_single_objective(
     trials: Sequence[FrozenTrial], study: Study, n_below: int
 ) -> tuple[list[FrozenTrial], list[FrozenTrial]]:
     if study.direction == StudyDirection.MINIMIZE:
-        sorted_trials = sorted(trials, key=lambda trial: cast("float", trial.value))
+        sorted_trials = sorted(trials, key=lambda trial: cast(float, trial.value))
     else:
-        sorted_trials = sorted(trials, key=lambda trial: cast("float", trial.value), reverse=True)
+        sorted_trials = sorted(trials, key=lambda trial: cast(float, trial.value), reverse=True)
     return sorted_trials[:n_below], sorted_trials[n_below:]
 
 
@@ -376,7 +287,7 @@ def _split_complete_trials_multi_objective(
         )
         indices_below = np.append(indices_below, selected_indices)
 
-    below_indices_set = set(cast("list", indices_below.tolist()))
+    below_indices_set = set(cast(list, indices_below.tolist()))
     below_trials = [trials[i] for i in range(len(trials)) if i in below_indices_set]
     above_trials = [trials[i] for i in range(len(trials)) if i not in below_indices_set]
     return below_trials, above_trials
@@ -384,15 +295,9 @@ def _split_complete_trials_multi_objective(
 
 def _get_infeasible_trial_score(trial: FrozenTrial) -> float:
     constraint = trial.system_attrs.get(_CONSTRAINTS_KEY)
-    if constraint is None:
-        optuna_warn(
-            f"Trial {trial.number} does not have constraint values."
-            " It will be treated as a lower priority than other trials."
-        )
-        return float("inf")
-    else:
-        # Violation values of infeasible dimensions are summed up.
-        return sum(v for v in constraint if v > 0)
+    assert constraint is not None
+    # Violation values of infeasible dimensions are summed up.
+    return sum(v for v in constraint if v > 0)
 
 
 def _split_infeasible_trials(
