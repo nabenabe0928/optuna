@@ -32,6 +32,14 @@ if TYPE_CHECKING:
     from optuna.trial import FrozenTrial
 
 
+# NOTE(nabenabe): Defining this in global scope lets advanced users customize the target states
+# externally (e.g., excluding FAIL). See # See https://github.com/optuna/optuna/issues/6654 for the
+# motivation. Additionally, setting `None` skips state filtering in the storage layer, speeding
+# up `BruteForceSampler`, though this is valid only for non-parallel setups. Please note that this
+# is not an official API, so we do not guarantee any correctness.
+_TREE_TRIAL_STATES = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING, TrialState.FAIL)
+
+
 # TODO(nabenabe): Simply use `slots=True` once Python 3.9 is dropped.
 @dataclass(**({"slots": True} if sys.version_info >= (3, 10) else {}))
 class _TreeNode:
@@ -130,8 +138,9 @@ def _get_non_waiting_trials_and_current_trial_index(
     # We directly query the storage to get trials here instead of `study.get_trials`,
     # since some pruners such as `HyperbandPruner` use the study transformed
     # to filter trials. See https://github.com/optuna/optuna/issues/2327 for details.
-    states = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING, TrialState.FAIL)
-    trials = study._storage.get_all_trials(study._study_id, deepcopy=False, states=states)
+    trials = study._storage.get_all_trials(
+        study._study_id, deepcopy=False, states=_TREE_TRIAL_STATES
+    )
     # `trials` is fetched by shallow copy, so pop() or element replacement are safe operations.
     for i in range(1, len(trials) + 1):
         # The current trial can be found at the later part for almost all cases.
