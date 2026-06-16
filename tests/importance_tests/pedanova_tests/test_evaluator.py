@@ -46,11 +46,13 @@ def test_filter(
     filtered_indices: list[int],
 ) -> None:
     _filter = _QuantileFilter(quantile, is_lower_better, min_n_top_trials=2, target=target)
+    study = optuna.create_study(directions=["minimize"]*len(values[0]))
     trials = [optuna.create_trial(values=vs) for vs in values]
     for i, t in enumerate(trials):
         t.set_user_attr("index", i)
-
-    indices = [t.user_attrs["index"] for t in _filter.filter(trials)]
+    study.add_trials(trials)  # Adding to study assigns a unique number to each trial.
+    numbered_trials = study.get_trials(deepcopy=False)
+    indices = [t.user_attrs["index"] for t in _filter.filter(numbered_trials).values()]
     assert len(indices) == len(filtered_indices)
     assert all(i == j for i, j in zip(indices, filtered_indices))
 

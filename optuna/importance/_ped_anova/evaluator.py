@@ -41,7 +41,7 @@ class _QuantileFilter:
         self._min_n_top_trials = min_n_top_trials
         self._target = target
 
-    def filter(self, trials: list[FrozenTrial]) -> list[FrozenTrial]:
+    def filter(self, trials: list[FrozenTrial]) -> dict[int, FrozenTrial]:
         target, min_n_top_trials = self._target, self._min_n_top_trials
         sign = 1.0 if self._is_lower_better else -1.0
         loss_values = sign * np.asarray([t.value if target is None else target(t) for t in trials])
@@ -59,7 +59,7 @@ class _QuantileFilter:
             _quantile(loss_values, self._quantile),
         )
         should_keep_trials = loss_values <= cutoff_val
-        return [t for t, should_keep in zip(trials, should_keep_trials) if should_keep]
+        return {t.number: t for t, should_keep in zip(trials, should_keep_trials) if should_keep}
 
 
 @experimental_class("3.6.0")
@@ -195,9 +195,9 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
         trials: list[FrozenTrial],
         quantile: float,
         target: Callable[[FrozenTrial], float] | None,
-    ) -> list[FrozenTrial]:
+    ) -> dict[int, FrozenTrial]:
         if quantile == 1.0:
-            return trials
+            return {t.number: t for t in trials}
         is_lower_better = study.directions[0] == StudyDirection.MINIMIZE
         if target is not None:
             optuna_warn(
@@ -207,11 +207,9 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             )
             is_lower_better = True
 
-        top_trials = _QuantileFilter(
+        return _QuantileFilter(
             quantile, is_lower_better, self._min_n_top_trials, target
         ).filter(trials)
-
-        return top_trials
 
     def _compute_pearson_divergence(
         self,
@@ -251,7 +249,6 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             params = list(dict.fromkeys(k for d in dists for k in d))
 
         assert params is not None
-
         trials = _get_filtered_trials(study, params, target=target)
         # The following should be tested at _get_filtered_trials.
         assert target is not None or max([len(t.values) for t in trials], default=1) == 1
@@ -267,57 +264,45 @@ class PedAnovaImportanceEvaluator(BaseImportanceEvaluator):
             )
         if len(target_trials) == 0:
             return {k: 0.0 for k in params}
-        # Theorem 4.2 and Algorithm 1 in the original paper:
-        # https://arxiv.org/abs/2601.20800
-        quantile = len(target_trials) / len(region_trials)  # gamma' / gamma
+        # NOTE(kAIto47802): We support the domain that takes one of several discrete values
+        # depending on the condition. However, when the domain changes smoothly, some ranges need
+        # to be merged into the same regime to stabilize the KDE within each regime.
+        # TODO(kAIto47802): Implement this.
+        # Theorem 4.2 and Algorithm 1 in the original paper: https://arxiv.org/abs/2601.20800
         param_importances = {k: 0.0 for k in params}
-        target_trial_ids = set(t._trial_id for t in target_trials)
-        for param_name in params:
-            regime_trials = _partition_by_regime(
-                param_name, region_trials, self._min_n_trials_in_regime
-            )
-            for dist, region_trials_regime in regime_trials.items():
-                target_trials_regime = [
-                    t for t in region_trials_regime if t._trial_id in target_trial_ids
-                ]
-                regime_prob_target = len(target_trials_regime) / len(target_trials)  # alpha_i
-                regime_prob_region = len(region_trials_regime) / len(region_trials)  # beta_i
-                if dist is not None and not dist.single() and len(target_trials_regime):
-                    param_importances[param_name] += (
-                        regime_prob_target**2
-                        / regime_prob_region
-                        * self._compute_pearson_divergence(
-                            param_name,
-                            dist,
-                            target_trials=target_trials_regime,
-                            region_trials=region_trials_regime,
-                        )
+        target_trial_nums = set(target_trials.keys())
+        regime_partitions: dict[str, dict[BaseDistribution, set[int]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
+        for t in region_trials.values():
+            trial_num = t.number
+            for param_name, dist in t.distributions.items():
+                regime_partitions[param_name][dist].add(trial_num)
+        for param_name, partition in regime_partitions.items():
+            for dist, region_trial_nums_regime in partition.items():
+                if len(region_trial_nums_regime) < self._min_n_trials_in_regime:
+                    optuna_warn(
+                        f"Some regimes for parameter `{param_name}` have less than "
+                        f"{self._min_n_trials_in_regime} trials. "
+                        "The importance of the parameter may be inaccurate."
                     )
+                    continue
+                target_trial_nums_regime = target_trial_nums & region_trial_nums_regime
+                if dist is None or dist.single() or not target_trial_nums_regime:
+                    continue
+                region_trials_regime = [region_trials[n] for n in region_trial_nums_regime]
+                target_trials_regime = [target_trials[n] for n in target_trial_nums_regime]
+                weight_regime = (
+                    (len(target_trials_regime) / len(target_trials)) ** 2  # alpha_i**2
+                    / (len(region_trials_regime) / len(region_trials))  # beta_i
+                )
+                ped_regime = self._compute_pearson_divergence(
+                    param_name, dist, target_trials_regime, region_trials_regime
+                )
+                param_importances[param_name] += weight_regime * ped_regime
+        quantile = len(target_trials) / len(region_trials)  # gamma' / gamma
         param_importances = {k: v * quantile**2 for k, v in param_importances.items()}
         return _sort_dict_by_importance(param_importances)
-
-
-def _partition_by_regime(
-    param_name: str, trials: list[FrozenTrial], min_n_trials_in_regime: int
-) -> dict[BaseDistribution | None, list[FrozenTrial]]:
-    # None for the inactive regime
-    regime_trials: dict[BaseDistribution | None, list[FrozenTrial]] = defaultdict(list)
-    for trial in trials:
-        regime_trials[trial.distributions.get(param_name)].append(trial)
-
-    # NOTE(kAIto47802): Cases where the domain takes one of several discrete values depending on
-    # the condition are supported. However, when the domain changes smoothly, some ranges need
-    # to be merged into the same regime to stabilize the KDE within each regime.
-    # TODO(kAIto47802): Implement this.
-    if any(len(v) < min_n_trials_in_regime for v in regime_trials.values()):
-        optuna_warn(
-            f"Some regimes for parameter `{param_name}` have less than "
-            f"{min_n_trials_in_regime} trials. "
-            "The importance of the parameter may be inaccurate."
-        )
-    regime_trials = {k: v for k, v in regime_trials.items() if len(v) >= min_n_trials_in_regime}
-
-    return regime_trials
 
 
 def _get_distributions_list(
