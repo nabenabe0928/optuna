@@ -76,6 +76,40 @@ def test_eval_acqf(
     verify_eval_acqf(x, acqf_cls(**kwargs))  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("n_running", [1, 4])
+def test_conditional_gpr_matches_joint(n_running: int) -> None:
+    N, D, S = 10, 3, 512
+    torch.manual_seed(42)
+    X_train = torch.rand(N, D, dtype=torch.float64)
+    y_train = torch.sin(X_train.sum(-1))
+    gpr = GPRegressor(
+        is_categorical=torch.zeros(D, dtype=torch.bool),
+        X_train=X_train,
+        y_train=y_train,
+        inverse_squared_lengthscales=torch.ones(D, dtype=torch.float64),
+        kernel_scale=torch.tensor(1.0, dtype=torch.float64),
+        noise_var=torch.tensor(0.01, dtype=torch.float64),
+    )
+    gpr._cache_matrix()
+
+    x_running = torch.rand(n_running, D, dtype=torch.float64)
+    x_new = torch.rand(D, dtype=torch.float64)
+    fixed_samples = acqf_module._sample_from_normal_sobol(dim=n_running + 1, n_samples=S, seed=7)
+
+    # Joint approach.
+    joint_x = torch.cat([x_running, x_new.unsqueeze(0)], dim=0)
+    mu_j, cov_j = gpr.posterior(joint_x, joint=True)
+    cov_j.diagonal().add_(1e-12)
+    L_j = torch.linalg.cholesky(cov_j)
+    samples_joint = mu_j + fixed_samples @ L_j.mT
+
+    # Conditional approach.
+    cond = acqf_module.ConditionalGPRegressor(gpr, x_running, fixed_samples, 1e-12)
+    samples_cond = cond.posterior_samples(x_new)
+
+    torch.testing.assert_close(samples_joint, samples_cond)
+
+
 @parametrized_x
 def test_eval_qlogei(x: np.ndarray, search_space: SearchSpace) -> None:
     Y = np.array([1.0, 2.0, 3.0])

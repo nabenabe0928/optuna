@@ -166,6 +166,68 @@ class LogEI(BaseAcquisitionFunc):
         )
 
 
+class ConditionalGPRegressor:
+    """Pre-samples fantasy values at x_running from p(f_r | data) and draws
+    conditional samples at new points from p(f_x | f_r, data)."""
+
+    def __init__(
+        self,
+        gpr: GPRegressor,
+        x_running: torch.Tensor,
+        fixed_samples: torch.Tensor,
+        stabilizing_noise: float,
+    ) -> None:
+        self._gpr = gpr
+        self._x_running = x_running
+        self._stabilizing_noise = stabilizing_noise
+        Q = x_running.shape[0]
+        self._z_x = fixed_samples[:, Q:]  # (S, 1)
+
+        with torch.no_grad():
+            mu_r, Sigma_rr = gpr.posterior(x_running, joint=True)
+            Sigma_rr.diagonal().add_(stabilizing_noise)
+            L_r = torch.linalg.cholesky(Sigma_rr)
+
+            self._fantasy_samples = mu_r + fixed_samples[:, :Q] @ L_r.mT  # (S, Q)
+
+            Sigma_rr_inv = torch.cholesky_inverse(L_r)
+            self._Sigma_rr_inv = Sigma_rr_inv  # (Q, Q)
+            self._Sigma_rr_inv_delta_r = Sigma_rr_inv @ (self._fantasy_samples - mu_r).T  # (Q, S)
+
+            cov_fxr_fX = gpr.kernel(x_running)  # (Q, N)
+            V_r = torch.linalg.solve_triangular(
+                gpr._cov_Y_Y_chol,
+                torch.linalg.solve_triangular(
+                    gpr._cov_Y_Y_chol.T, cov_fxr_fX, upper=True, left=False
+                ),
+                upper=False,
+                left=False,
+            )
+            self._V_r_T = V_r.T  # (N, Q)
+
+    def posterior_samples(self, x: torch.Tensor) -> torch.Tensor:
+        is_single = x.ndim == 1
+        x_ = x.unsqueeze(0) if is_single else x
+
+        mu_x, var_x = self._gpr.posterior(x_)
+        cov_fx_fX = self._gpr.kernel(x_)  # (..., N)
+        cov_fx_fr = self._gpr.kernel(x_, self._x_running)  # (..., Q)
+        Sigma_xr = cov_fx_fr - cov_fx_fX @ self._V_r_T  # (..., Q)
+
+        # p(f_x | f_r, data): conditional mean and variance.
+        cond_mean = mu_x.unsqueeze(-1) + Sigma_xr @ self._Sigma_rr_inv_delta_r  # (..., S)
+        cond_var = (
+            var_x + self._stabilizing_noise
+            - (Sigma_xr @ self._Sigma_rr_inv * Sigma_xr).sum(-1)
+        ).clamp_min_(0.0)  # (...,)
+
+        f_x = cond_mean + cond_var.sqrt().unsqueeze(-1) * self._z_x.T  # (..., S)
+
+        fantasy = self._fantasy_samples.unsqueeze(0).expand(x_.shape[0], -1, -1)  # (..., S, Q)
+        result = torch.cat([fantasy, f_x.unsqueeze(-1)], dim=-1)  # (..., S, Q+1)
+        return result.squeeze(0) if is_single else result
+
+
 class qLogEI(BaseAcquisitionFunc):
     def __init__(
         self,
@@ -177,47 +239,24 @@ class qLogEI(BaseAcquisitionFunc):
         normalized_params_of_running_trials: np.ndarray,
         stabilizing_noise: float = 1e-12,
     ) -> None:
-        self._gpr = gpr
-        self._stabilizing_noise = stabilizing_noise
         self._threshold = threshold
-        self._x_running = torch.from_numpy(normalized_params_of_running_trials)
-        self._fixed_samples = _sample_from_normal_sobol(
-            # NOTE(nabe): The number of pending points + the new point, so +1.
+        x_running = torch.from_numpy(normalized_params_of_running_trials)
+        fixed_samples = _sample_from_normal_sobol(
             dim=1 + normalized_params_of_running_trials.shape[0],
             n_samples=n_qmc_samples,
             seed=qmc_seed,
         )
+        self._cond_gpr = ConditionalGPRegressor(gpr, x_running, fixed_samples, stabilizing_noise)
         super().__init__(gpr.length_scales, search_space)
-
-    def _get_posterior_samples(self, x: torch.Tensor) -> torch.Tensor:
-        mean, cov = self._gpr.posterior(x, joint=True)
-        cov.diagonal(dim1=-2, dim2=-1).add_(self._stabilizing_noise)
-        # mean.shape: (q + 1,), cov.shape: (q + 1, q + 1), fixed_samples.shape: (128, q + 1).
-        return mean.unsqueeze(-2) + torch.matmul(
-            self._fixed_samples, torch.linalg.cholesky(cov).transpose(-1, -2)
-        )
-
-    def _get_joint_input(self, x: torch.Tensor) -> torch.Tensor:
-        if x.ndim == 1:
-            return torch.cat([self._x_running, x.unsqueeze(0)], dim=0)
-        if x.ndim == 2:
-            # Expand from (Q, D) to (..., Q, D), and then concat to (..., Q+1, D).
-            running = self._x_running.unsqueeze(0).expand(x.shape[0], -1, -1)
-            return torch.cat([running, x.unsqueeze(-2)], dim=-2)
-        raise ValueError(f"Does not expect x.ndim = {x.ndim}.")
 
     def eval_acqf(self, x: torch.Tensor) -> torch.Tensor:
         if np.isneginf(self._threshold):
             return torch.zeros(x.shape[:-1], dtype=torch.float64)
 
         # NOTE(nabenabe): See Eq. (10) of https://arxiv.org/pdf/2310.20708
-        joint_x = self._get_joint_input(x)
-        y_post = self._get_posterior_samples(joint_x)
+        y_post = self._cond_gpr.posterior_samples(x)
         log_improvement = y_post.clamp_(min=torch.tensor(_EPS, dtype=torch.float64)).log()
-        # Take the max operation along the running candidates direction (the Q-axis).
-        # TODO(sawa3030): Consider using fatmax instead of max.
         smooth_max_log_improvement = torch.max(log_improvement, dim=-1).values
-        # Take the mean over the fixed sample direction (the s-axis).
         return _logmeanexp(smooth_max_log_improvement, dim=-1)
 
 
