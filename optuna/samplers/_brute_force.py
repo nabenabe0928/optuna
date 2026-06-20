@@ -158,7 +158,6 @@ def _get_non_waiting_trials_and_current_trial_index(
     # We directly query the storage to get trials here instead of `study.get_trials`,
     # since some pruners such as `HyperbandPruner` use the study transformed
     # to filter trials. See https://github.com/optuna/optuna/issues/2327 for details.
-    states = (TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING, TrialState.FAIL)
     trials = study._storage.get_all_trials(study._study_id, deepcopy=False, states=states)
     # `trials` is fetched by shallow copy, so pop() or element replacement are safe operations.
     for i in range(1, len(trials) + 1):
