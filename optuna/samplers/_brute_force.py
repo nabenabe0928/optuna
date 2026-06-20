@@ -50,6 +50,7 @@ _UNEXPANDED_NODE = _UnexpandedTreeNode()
 # TODO(nabenabe): Simply use `slots=True` once Python 3.9 is dropped.
 @dataclass(**({"slots": True} if sys.version_info >= (3, 10) else {}))
 class _TreeNode:
+    # region (_TreeNode documentation)
     # A tree representing the search space for brute force sampling.
     # Each internal node corresponds to a parameter, and its children are keyed by the parameter's
     # candidate values (in internal representation). A path from the root to a terminal node
@@ -63,6 +64,7 @@ class _TreeNode:
     # Leaf represents the last parameter of a finished ``params``, and internal means the node
     # does not represent a complete ``params``.
     # NOTE(nabenabe): I tried representations by list and dict, but they did not really speed up.
+    # endregion
 
     param_name: str | None = None
     children: dict[float, _TreeNode | _UnexpandedTreeNode] | None = None
@@ -299,13 +301,12 @@ class BruteForceSampler(BaseSampler):
         # being initialized as an empty graph, which is created with n_jobs > 1
         # where we get trials[i].params = {} for some i.
         self._populate_tree(tree, trials, trial.params)
-        if not tree.is_any_expandable(exclude_running):
-            choices = _enumerate_candidates(*c_args)
-            return param_distribution.to_external_repr(self._rng.rng.choice(choices).item())
+        if tree.is_any_expandable(exclude_running):
+            param_val = tree.sample_child(self._rng.rng, exclude_running)
         else:
-            return param_distribution.to_external_repr(
-                tree.sample_child(self._rng.rng, exclude_running)
-            )
+            choices = _enumerate_candidates(*c_args)
+            param_val = self._rng.rng.choice(choices).item()
+        return param_distribution.to_external_repr(param_val)
 
     def after_trial(
         self, study: Study, trial: FrozenTrial, state: TrialState, values: Sequence[float] | None
@@ -316,10 +317,27 @@ class BruteForceSampler(BaseSampler):
         trials[current_idx] = create_trial(
             state=state, values=values, params=trial.params, distributions=trial.distributions
         )
-        tree = _TreeNode()
-        self._populate_tree(tree, trials, {})
-        if not tree.is_any_expandable(exclude_running):
-            study.stop()
+        # region (The rationales behind the early-return logic)
+        # NOTE(nabenabe): This routine checks whether any existing branches of the current trial is
+        # expandable (unexplored). For example, if `params={"a": 1, "b": 2, "c": 3}`, we first
+        # check whether all possible params represented by `{"a": 1, "b": 2} | X` exists. If there
+        # is any unexplored `X` based on the search space, we still need to evaluate such `X`, so
+        # study does not have to be stopped yet. This search is much quicker compared to full tree
+        # build because there are much fewer trials among all that take `{"a": 1, "b": 2}`. If such
+        # `X` is already exhaustively searched, `X` is relaxed to `{"a": 1} | X`. Note that this
+        # strategy would not be fast enough if each branch is not sampled uniformly sometimes. See
+        # https://github.com/optuna/optuna/issues/6070 for the discussion. Also, we avoided
+        # `tree_size` caching with the preference of the stateless nature of this sampler.
+        # See https://github.com/optuna/optuna/pull/6646/ for the full discussion.
+        # endregion
+        params = trial.params.copy()
+        for param_name in reversed(trial.params.keys()):
+            params.pop(param_name)
+            tree = _TreeNode()
+            self._populate_tree(tree, trials, params)
+            if tree.is_any_expandable(exclude_running):
+                return
+        study.stop()
 
 
 def _is_nan(v: CategoricalChoiceType) -> bool:
