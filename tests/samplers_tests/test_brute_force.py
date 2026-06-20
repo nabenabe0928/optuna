@@ -101,7 +101,7 @@ def test_tree_node_add_paths(
     template_trials, template_tree = template_trials_and_tree
     template_trials.append(deepcopy(template_trials[0]))  # Duplicate a trial for robustness check.
     tree = _TreeNode()
-    samplers.BruteForceSampler._populate_tree(tree, template_trials, {})
+    samplers.BruteForceSampler._populate_tree(tree, template_trials, {}, exclude_running=False)
     assert tree == template_tree
 
 
@@ -126,14 +126,13 @@ def test_tree_node_count_unexpanded(
         state=optuna.trial.TrialState.RUNNING, params={"a": 2}, distributions=only_a
     )
     template_trials.append(running_trial)
-    tree = _TreeNode()
-    samplers.BruteForceSampler._populate_tree(tree, template_trials, {})
-    n_unexpanded = template_tree.count_unexpanded(exclude_running=True)
-    assert template_tree.count_unexpanded(exclude_running=False) == n_unexpanded, (
-        "No Running in template"
-    )
-    assert tree.count_unexpanded(exclude_running=False) == n_unexpanded
-    assert tree.count_unexpanded(exclude_running=True) == n_unexpanded - 1
+    tree_ex = _TreeNode()
+    tree_in = _TreeNode()
+    samplers.BruteForceSampler._populate_tree(tree_ex, template_trials, {}, exclude_running=True)
+    samplers.BruteForceSampler._populate_tree(tree_in, template_trials, {}, exclude_running=False)
+    n_unexpanded = template_tree.count_unexpanded()
+    assert tree_in.count_unexpanded() == n_unexpanded
+    assert tree_ex.count_unexpanded() == n_unexpanded - 1
 
 
 def test_study_optimize_with_single_search_space() -> None:

@@ -37,10 +37,10 @@ if TYPE_CHECKING:
 class _UnexpandedTreeNode:
     is_running: bool = False
 
-    def is_any_expandable(self, exclude_running: bool) -> bool:
+    def is_any_expandable(self) -> bool:
         return True
 
-    def count_unexpanded(self, exclude_running: bool) -> int:
+    def count_unexpanded(self) -> int:
         return 1
 
 
@@ -96,9 +96,6 @@ class _TreeNode:
         else:
             self._validate_search_space_consistency(param_name, choices_args)
 
-    def set_running(self) -> None:
-        self.is_running = True
-
     def set_leaf(self) -> None:
         if self.children is not None:
             self._validate_search_space_consistency(None, None)
@@ -119,21 +116,21 @@ class _TreeNode:
             current_node = cast(_TreeNode, next_node)
         return current_node
 
-    def is_any_expandable(self, exclude_running: bool) -> bool:
+    def is_any_expandable(self) -> bool:
         if (children := self.children) is None:
-            return not exclude_running or not self.is_running
-        return any(child.is_any_expandable(exclude_running) for child in children.values())
+            return True
+        return any(child.is_any_expandable() for child in children.values())
 
-    def count_unexpanded(self, exclude_running: bool) -> int:
+    def count_unexpanded(self) -> int:
         # Count the number of unexpanded nodes in the subtree.
         if (children := self.children) is None:
-            return 0 if exclude_running and self.is_running else 1
-        return sum(child.count_unexpanded(exclude_running) for child in children.values())
+            return 1
+        return sum(child.count_unexpanded() for child in children.values())
 
-    def sample_child(self, rng: np.random.RandomState, exclude_running: bool) -> float:
+    def sample_child(self, rng: np.random.RandomState) -> float:
         assert (children := self.children) is not None
         unexpanded_counts = np.array(
-            [child.count_unexpanded(exclude_running) for child in children.values()], dtype=float
+            [child.count_unexpanded() for child in children.values()], dtype=float
         )
 
         # Blend exact uniform sampling with flat uniform sampling
@@ -247,7 +244,9 @@ class BruteForceSampler(BaseSampler):
         return {}
 
     @staticmethod
-    def _populate_tree(tree: _TreeNode, trials: list[FrozenTrial], params: dict[str, Any]) -> None:
+    def _populate_tree(
+        tree: _TreeNode, trials: list[FrozenTrial], params: dict[str, Any], exclude_running: bool
+    ) -> None:
         # Populate tree under given params from the given trials.
         cat_internal_repr_cache: dict[str, dict[CategoricalChoiceType, float]] = {}
         params_items = params.items()
@@ -284,11 +283,10 @@ class BruteForceSampler(BaseSampler):
                 if not all(_is_nan(trial_params.get(p)) for p in nan_param_names):
                     continue
             if (leaf := tree.add_path(_get_trial_path(trial))) is not None:
-                # The parameters are on the defined grid.
-                if trial.state.is_finished():
-                    leaf.set_leaf()
-                else:
-                    leaf.set_running()
+                if not (is_finished := trial.state.is_finished()):
+                    leaf.is_running = True
+                if is_finished or (exclude_running and leaf.children is None):
+                    leaf.set_leaf()  # param_name=None and choices=[] mean the end node.
 
     def sample_independent(
         self,
@@ -297,7 +295,6 @@ class BruteForceSampler(BaseSampler):
         param_name: str,
         param_distribution: BaseDistribution,
     ) -> Any:
-        exclude_running = not self._avoid_premature_stop
         trials, current_idx = _get_non_waiting_trials_and_current_trial_index(
             study, trial.number, self._trial_states_in_tree
         )
@@ -313,9 +310,10 @@ class BruteForceSampler(BaseSampler):
         # Populating must happen after the initialization above to prevent `tree` from
         # being initialized as an empty graph, which is created with n_jobs > 1
         # where we get trials[i].params = {} for some i.
-        self._populate_tree(tree, trials, trial.params)
-        if tree.is_any_expandable(exclude_running):
-            param_val = tree.sample_child(self._rng.rng, exclude_running)
+        exclude_running = not self._avoid_premature_stop
+        self._populate_tree(tree, trials, trial.params, exclude_running)
+        if tree.is_any_expandable():
+            param_val = tree.sample_child(self._rng.rng)
         else:
             choices = _enumerate_candidates(*c_args)
             param_val = self._rng.rng.choice(choices).item()
@@ -324,7 +322,6 @@ class BruteForceSampler(BaseSampler):
     def after_trial(
         self, study: Study, trial: FrozenTrial, state: TrialState, values: Sequence[float] | None
     ) -> None:
-        exclude_running = not self._avoid_premature_stop
         trials, current_idx = _get_non_waiting_trials_and_current_trial_index(
             study, trial.number, self._trial_states_in_tree
         )
@@ -346,11 +343,12 @@ class BruteForceSampler(BaseSampler):
         # See https://github.com/optuna/optuna/pull/6646/ for the full discussion.
         # endregion
         params = trial.params.copy()
+        exclude_running = not self._avoid_premature_stop
         for param_name in reversed(trial.params.keys()):
             params.pop(param_name)
             tree = _TreeNode()
-            self._populate_tree(tree, trials, params)
-            if tree.is_any_expandable(exclude_running):
+            self._populate_tree(tree, trials, params, exclude_running)
+            if tree.is_any_expandable():
                 return
         study.stop()
 
