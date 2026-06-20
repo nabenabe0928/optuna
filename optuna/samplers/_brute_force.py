@@ -129,27 +129,17 @@ class _TreeNode:
 
     def sample_child(self, rng: np.random.RandomState) -> float:
         assert (children := self.children) is not None
-        unexpanded_counts = np.array(
-            [child.count_unexpanded() for child in children.values()], dtype=float
-        )
-
-        # Blend exact uniform sampling with flat uniform sampling
-        # to prevent starvation of unexplored branches
-        alpha = 0.5
-        weights_orig = unexpanded_counts / unexpanded_counts.sum()
-        weights_flat = np.where(unexpanded_counts > 0, 1.0, 0.0)
-        weights_flat /= weights_flat.sum()
-
-        weights = (1.0 - alpha) * weights_orig + alpha * weights_flat
-        if any(
-            not value.is_running and weights[i] > 0 for i, value in enumerate(children.values())
-        ):
-            # Prioritize picking non-running and unexpanded nodes.
-            for i, child in enumerate(children.values()):
-                if child.is_running:
-                    weights[i] = 0.0
-        weights /= weights.sum()
-        return rng.choice(list(children.keys()), p=weights).item()
+        if rng.random() < 0.5:
+            counts = [int(child.is_any_expandable()) for child in children.values()]
+        else:
+            counts = [child.count_unexpanded() for child in children.values()]
+        active_children = {k: child for (k, child), c in zip(children.items(), counts) if c > 0}
+        weights = np.array([c for c in counts if c > 0], dtype=float)
+        active_choices = [k for k, child in active_children.items() if not child.is_running]
+        active_choices = active_choices or list(active_children.values())
+        if len(active_choices) < len(active_children):
+            weights = weights[[not child.is_running for child in active_children.values()]]
+        return rng.choice(active_choices, p=weights / weights.sum()).item()
 
 
 def _get_non_waiting_trials_and_current_trial_index(
