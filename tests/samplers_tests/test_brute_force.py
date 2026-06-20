@@ -261,7 +261,7 @@ def test_parallel_optimize() -> None:
 
 def test_not_avoid_premature_stop() -> None:
     study = optuna.create_study(sampler=samplers.BruteForceSampler(seed=42))
-    dists = {
+    dists: dict[str, optuna.distributions.BaseDistribution] = {
         "x": optuna.distributions.IntDistribution(0, 1),
         "y": optuna.distributions.IntDistribution(0, 1),
     }
@@ -293,7 +293,7 @@ def test_avoid_premature_stop() -> None:
     study = optuna.create_study(
         sampler=samplers.BruteForceSampler(seed=42, avoid_premature_stop=True)
     )
-    dists = {
+    dists: dict[str, optuna.distributions.BaseDistribution] = {
         "x": optuna.distributions.IntDistribution(0, 1),
         "y": optuna.distributions.IntDistribution(0, 1),
     }

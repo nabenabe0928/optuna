@@ -219,7 +219,10 @@ class BruteForceSampler(BaseSampler):
         # official API, so we do not guarantee any correctness.
         # endregion
         self._trial_states_in_tree = [
-            TrialState.COMPLETE, TrialState.PRUNED, TrialState.RUNNING, TrialState.FAIL
+            TrialState.COMPLETE,
+            TrialState.PRUNED,
+            TrialState.RUNNING,
+            TrialState.FAIL,
         ]
 
     def infer_relative_search_space(
