@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from dataclasses import field
 import math
-from typing import NamedTuple
 from typing import Union
 
 import numpy as np
@@ -9,103 +10,35 @@ import numpy as np
 from optuna.samplers._tpe import _truncnorm
 
 
-class _BatchedCategoricalDistributions(NamedTuple):
+@dataclass
+class _BatchedCategoricalDistributions:
     weights: np.ndarray
 
 
-class _BatchedTruncNormDistributions(NamedTuple):
+# TODO(nabe): Use slots=True once Python 3.9 is dropped.
+@dataclass
+class _BatchedTruncNormDistributions:
     mu: np.ndarray
     sigma: np.ndarray
     low: float  # Currently, low and high do not change per trial.
     high: float
-
-    @property
-    def adapted_low(self) -> float:
-        return self.low
-
-    @property
-    def adapted_high(self) -> float:
-        return self.high
-
-    @property
-    def is_log(self) -> bool:
-        return False
-
-    @property
-    def step(self) -> float:
-        return 0.0
-
-
-class _BatchedTruncLogNormDistributions(NamedTuple):
-    mu: np.ndarray
-    sigma: np.ndarray
-    low: float  # Currently, low and high do not change per trial.
-    high: float
-
-    @property
-    def adapted_low(self) -> float:
-        return math.log(self.low)
-
-    @property
-    def adapted_high(self) -> float:
-        return math.log(self.high)
-
-    @property
-    def is_log(self) -> bool:
-        return True
-
-    @property
-    def step(self) -> float:
-        return 0.0
-
-
-class _BatchedDiscreteTruncNormDistributions(NamedTuple):
-    mu: np.ndarray
-    sigma: np.ndarray
-    low: float  # Currently, low, high and step do not change per trial.
-    high: float
     step: float
+    is_log: bool
+    adapted_low: float = field(init=False)
+    adapted_high: float = field(init=False)
 
-    @property
-    def adapted_low(self) -> float:
-        return self.low - self.step / 2
-
-    @property
-    def adapted_high(self) -> float:
-        return self.high + self.step / 2
-
-    @property
-    def is_log(self) -> bool:
-        return False
-
-
-class _BatchedDiscreteTruncLogNormDistributions(NamedTuple):
-    mu: np.ndarray
-    sigma: np.ndarray
-    low: float  # Currently, low, high and step do not change per trial.
-    high: float
-    step: float
-
-    @property
-    def adapted_low(self) -> float:
-        return math.log(self.low - self.step / 2)
-
-    @property
-    def adapted_high(self) -> float:
-        return math.log(self.high + self.step / 2)
-
-    @property
-    def is_log(self) -> bool:
-        return True
+    def __post_init__(self) -> None:
+        self.adapted_low = self.low
+        self.adapted_high = self.high
+        if (step := self.step) != 0.0:
+            self.adapted_low -= step / 2
+            self.adapted_high += step / 2
+        if self.is_log:
+            self.adapted_low = math.log(self.adapted_low)
+            self.adapted_high = math.log(self.adapted_high)
 
 
-_BatchedDistributions = Union[
-    _BatchedCategoricalDistributions,
-    _BatchedTruncNormDistributions,
-    _BatchedTruncLogNormDistributions,
-    _BatchedDiscreteTruncNormDistributions,
-    _BatchedDiscreteTruncLogNormDistributions,
-]
+_BatchedDistributions = Union[_BatchedCategoricalDistributions, _BatchedTruncNormDistributions]
 
 
 def _unique_inverse_2d(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -136,7 +69,8 @@ def _log_gauss_mass_unique(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return _truncnorm._log_gauss_mass(a_uniq, b_uniq)[inv].reshape(a.shape)
 
 
-class _MixtureOfProductDistribution(NamedTuple):
+@dataclass
+class _MixtureOfProductDistribution:
     weights: np.ndarray
     distributions: list[_BatchedDistributions]
 

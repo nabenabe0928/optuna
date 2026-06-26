@@ -11,12 +11,7 @@ from optuna.distributions import CategoricalDistribution
 from optuna.distributions import FloatDistribution
 from optuna.distributions import IntDistribution
 from optuna.samplers._tpe.probability_distributions import _BatchedCategoricalDistributions
-from optuna.samplers._tpe.probability_distributions import (
-    _BatchedDiscreteTruncLogNormDistributions,
-)
-from optuna.samplers._tpe.probability_distributions import _BatchedDiscreteTruncNormDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedDistributions
-from optuna.samplers._tpe.probability_distributions import _BatchedTruncLogNormDistributions
 from optuna.samplers._tpe.probability_distributions import _BatchedTruncNormDistributions
 from optuna.samplers._tpe.probability_distributions import _MixtureOfProductDistribution
 
@@ -226,21 +221,11 @@ class _ParzenEstimator:
         mus = np.append(mus, [0.5 * (low + high)])
         sigmas = np.append(sigmas, [high - low])
 
-        if search_space.step is None:
-            if not search_space.log:
-                return _BatchedTruncNormDistributions(
-                    mus, sigmas, search_space.low, search_space.high
-                )
-            else:
-                return _BatchedTruncLogNormDistributions(
-                    mus, sigmas, search_space.low, search_space.high
-                )
-        else:
-            if not search_space.log:
-                return _BatchedDiscreteTruncNormDistributions(
-                    mus, sigmas, search_space.low, search_space.high, search_space.step
-                )
-            else:
-                return _BatchedDiscreteTruncLogNormDistributions(
-                    mus, sigmas, search_space.low, search_space.high, search_space.step
-                )
+        return _BatchedTruncNormDistributions(
+            mus,
+            sigmas,
+            low=search_space.low,
+            high=search_space.high,
+            is_log=search_space.log,
+            step=search_space.step or 0.0,
+        )
