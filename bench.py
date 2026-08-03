@@ -13,7 +13,7 @@ bbob = optunahub.load_module("benchmarks/bbob")
 
 def run_gp_sampler(trial: optuna.Trial) -> float:
     function_id = trial.suggest_int("function_id", 1, 24)
-    dimension = trial.suggest_categorical("dimension", [2, 5, 10])
+    dimension = trial.suggest_categorical("dimension", [2, 5, 10, 20, 40])
     seed = trial.suggest_int("seed", 0, 9)
     problem = bbob.Problem(function_id=function_id, dimension=dimension)
     prior_type = trial.suggest_categorical("prior_type", ["optuna", "hvarfner"])
