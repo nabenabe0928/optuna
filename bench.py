@@ -1,8 +1,11 @@
+import json
+
 import optunahub
 import torch  # noqa: F401  # import first to reduce the overhead later.
 
 import optuna
 from optuna._gp import prior
+from jsonify_optuna import jsonify
 
 
 bbob = optunahub.load_module("benchmarks/bbob")
@@ -36,5 +39,7 @@ def run_gp_sampler(trial: optuna.Trial) -> float:
 journal_file = optuna.storages.journal.JournalFileBackend("prior-benchmark.log")
 storage = optuna.storages.JournalStorage(journal_file)
 sampler = optuna.samplers.BruteForceSampler()
-study = optuna.create_study(sampler=sampler, storage=storage, load_if_exists=True)
+study = optuna.create_study(sampler=sampler, storage=storage, load_if_exists=True, study_name="main")
 study.optimize(run_gp_sampler)
+with open("prior-benchmark.json", mode="w") as f:
+    json.dump(jsonify(study), f)
