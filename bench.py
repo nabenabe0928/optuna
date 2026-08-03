@@ -38,8 +38,11 @@ def run_gp_sampler(trial: optuna.Trial) -> float:
 
 journal_file = optuna.storages.journal.JournalFileBackend("prior-benchmark.log")
 storage = optuna.storages.JournalStorage(journal_file)
-sampler = optuna.samplers.BruteForceSampler()
+sampler = optuna.samplers.BruteForceSampler(avoid_premature_stop=True)
 study = optuna.create_study(sampler=sampler, storage=storage, load_if_exists=True, study_name="main")
 study.optimize(run_gp_sampler)
 with open("prior-benchmark.json", mode="w") as f:
-    json.dump(jsonify(study), f)
+    target_study = optuna.create_study(study_name="main")
+    complete_state = optuna.trial.TrialState.COMPLETE
+    target_study.add_trials(study.get_trials(deepcopy=False, states=(complete_state, )))
+    json.dump(jsonify(target_study), f)

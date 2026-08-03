@@ -147,6 +147,7 @@ def plot_average_rank(df: pd.DataFrame, d: int) -> None:
 
 if __name__ == "__main__":
     df = get_dataframe()
-    for d in [2, 5, 10]:
+    print(len(df))
+    for d in [2, 5, 10, 20, 40]:
         main(df, d=d)
         plot_average_rank(df, d=d)
