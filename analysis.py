@@ -52,14 +52,13 @@ def plot_trajectory(
     steps = np.arange(len(m)) + N_INIT
     color = COLOR_DICT[prior_type]
     plot_kwargs = dict(color=color, ls=LS_DICT[kernel_type], marker=MARKER_DICT[kernel_type])
-    line, = ax.plot(steps, m, **plot_kwargs, markevery=20)
+    (line,) = ax.plot(steps, m, **plot_kwargs, markevery=20)
     ax.fill_between(steps, m - s, m + s, alpha=0.2, color=color)
     ax.set_xlim(steps[0] - 0.1, steps[-1] + 0.1)
     return line
 
 
-def main(d: int) -> None:
-    df = get_dataframe()
+def main(df: pd.DataFrame, d: int) -> None:
     ncols = 4
     nrows = 6
     fig, axes = plt.subplots(ncols=ncols, nrows=nrows, figsize=(20, 20), sharex=True)
@@ -86,9 +85,68 @@ def main(d: int) -> None:
                 labels.append(f"{kernel_type} & {prior_type}")
     fig.legend(handles=lines, labels=labels, bbox_to_anchor=(0.75, 0.08), ncols=4)
     plt.savefig(f"prior-bench-{d}d.png", bbox_inches="tight")
+    plt.close(fig)
+
+
+def compute_average_ranks(
+    df: pd.DataFrame, d: int, combos: list[tuple[str, str]]
+) -> dict[tuple[str, str], np.ndarray]:
+    sub_df = df[df["dimension"] == d]
+    ranks_per_combo: dict[tuple[str, str], list[np.ndarray]] = {combo: [] for combo in combos}
+    for function_id in sub_df["function_id"].unique():
+        func_df = sub_df[sub_df["function_id"] == function_id]
+        for seed in func_df["seed"].unique():
+            seed_df = func_df[func_df["seed"] == seed]
+            trajectories = np.stack(
+                [
+                    np.minimum.accumulate(
+                        seed_df[
+                            (seed_df["prior_type"] == prior_type)
+                            & (seed_df["kernel_type"] == kernel_type)
+                        ]["values"].iloc[0]
+                    )[N_INIT:]
+                    for prior_type, kernel_type in combos
+                ]
+            )
+            # Lower value is better, so rank 1 goes to the smallest value at each step.
+            ranks = trajectories.argsort(axis=0).argsort(axis=0) + 1
+            for combo, rank in zip(combos, ranks):
+                ranks_per_combo[combo].append(rank)
+    return {combo: np.mean(ranks, axis=0) for combo, ranks in ranks_per_combo.items()}
+
+
+def plot_average_rank(df: pd.DataFrame, d: int) -> None:
+    combos = [
+        (prior_type, kernel_type)
+        for prior_type in ["optuna", "hvarfner"]
+        for kernel_type in ["rbf", "matern"]
+    ]
+    avg_ranks = compute_average_ranks(df, d, combos)
+    steps = np.arange(N_INIT, N_INIT + next(iter(avg_ranks.values())).size)
+    n_functions = df[df["dimension"] == d]["function_id"].nunique()
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.grid(which="minor", color="gray", linestyle=":")
+    ax.grid(which="major", color="black")
+    ax.set_title(f"Average rank over {n_functions} functions (dimension={d})")
+    ax.set_xlabel("Number of Evaluations")
+    ax.set_ylabel("Average Rank")
+    lines = []
+    labels = []
+    for prior_type, kernel_type in combos:
+        color = COLOR_DICT[prior_type]
+        plot_kwargs = dict(color=color, ls=LS_DICT[kernel_type], marker=MARKER_DICT[kernel_type])
+        (line,) = ax.plot(steps, avg_ranks[(prior_type, kernel_type)], **plot_kwargs, markevery=20)
+        lines.append(line)
+        labels.append(f"{kernel_type} & {prior_type}")
+    ax.set_xlim(steps[0] - 0.1, steps[-1] + 0.1)
+    fig.legend(handles=lines, labels=labels, bbox_to_anchor=(0.95, 0.15), ncols=2)
+    plt.savefig(f"prior-bench-rank-{d}d.png", bbox_inches="tight")
+    plt.close(fig)
 
 
 if __name__ == "__main__":
-    main(d=2)
-    main(d=5)
-    main(d=10)
+    df = get_dataframe()
+    for d in [2, 5, 10]:
+        main(df, d=d)
+        plot_average_rank(df, d=d)
