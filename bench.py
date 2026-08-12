@@ -41,8 +41,14 @@ storage = optuna.storages.JournalStorage(journal_file)
 sampler = optuna.samplers.BruteForceSampler(avoid_premature_stop=True)
 study = optuna.create_study(sampler=sampler, storage=storage, load_if_exists=True, study_name="main")
 study.optimize(run_gp_sampler)
+seen = {}
 with open("prior-benchmark.json", mode="w") as f:
     target_study = optuna.create_study(study_name="main")
     complete_state = optuna.trial.TrialState.COMPLETE
-    target_study.add_trials(study.get_trials(deepcopy=False, states=(complete_state, )))
+    for t in study.get_trials(deepcopy=False, states=(complete_state, )):
+        param_key = json.dumps(t.params)
+        if param_key in seen:
+            continue
+        seen[param_key] = True
+        target_study.add_trial(t)
     json.dump(jsonify(target_study), f)

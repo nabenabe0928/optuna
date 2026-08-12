@@ -10,7 +10,7 @@ import pandas as pd
 
 bbob = optunahub.load_module("benchmarks/bbob")
 plt.rcParams["font.family"] = "Times New Roman"
-plt.rcParams["font.size"] = 16
+plt.rcParams["font.size"] = 18
 N_INIT = 10
 COLOR_DICT = {"hvarfner": "darkred", "optuna": "blue"}
 LS_DICT = {"rbf": "dotted", "matern": "dashed"}
