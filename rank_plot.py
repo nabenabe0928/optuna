@@ -8,6 +8,8 @@ from analysis import get_dataframe
 from analysis import plt
 
 
+plt.rcParams["pdf.fonttype"] = 42
+plt.rcParams["ps.fonttype"] = 42
 COLOR_DICT = {"hvarfner": "darkred", "optuna": "blue"}
 LS_DICT = {"rbf": "dotted", "matern": "dashed"}
 MARKER_DICT = {"rbf": "s", "matern": "o"}
